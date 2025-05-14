@@ -2,6 +2,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import random
 from typing import Any, Dict, List, Optional, Tuple
+import numpy as np
 
 class OrderedSet:
     def __init__(self) -> None:
@@ -118,7 +119,8 @@ def update_particle(
             particle.visited_nodes.remove_last() # pops the particle from the node's visited nodes if the node got owned by another particle
 
         if particle.potential < 0.05:
-            #If particle is reduced below min, it isreset to a randomly chosen node and its potential is setto the minimum level, min.
+            #If particle is reduced below min, it is reset to a randomly chosen node and 
+            # its potential is setto the minimum level, min.
             particle.potential = 0.05
             free_node = get_free_node(G)
             particle.visited_nodes = [free_node]
@@ -139,28 +141,44 @@ def get_free_node(G: nx.Graph) -> Optional[Any]:
 def run_simulation(
     G: nx.Graph, 
     num_particles: int, 
-    iterations: int, 
+    #iterations: int, 
     p_det: float = 0.6
 ) -> Tuple[nx.Graph, List[Particle]]:
     particles: List[Particle] = [Particle(i) for i in range(num_particles)]
     for node in G.nodes():
         G.nodes[node]['data'] = Node()  # add the custom Node object as a node attribute
 
-    for _ in range(iterations):
+    while check_average_node_potential(G):
         for particle in particles:
             node = move_particle(particle, G, p_det)
             update_particle(G, particle, node)
 
     return G, particles
 
-def get_if_graph_without_owners(G: nx.Graph) -> bool:
+def check_average_node_potential(G: nx.Graph) -> bool:
+    '''
+    Check if the average potential of the nodes is greater than 0.5
+    '''
+    avg_potential = []
+    for i in range(len(G.nodes())):
+        node_potential = G.nodes(data=True)[i]['data'].potential
+        avg_potential.append(node_potential)
+    avg_potential = np.mean(avg_potential)
+    return avg_potential <= 0.9
+
+def check_cluster_label(arr):
+    '''
+    Check if cluster is positive
+    '''
+    count_ones = np.count_nonzero(arr == 1)
+    count_zeros = np.count_nonzero(arr == 0)
+    return 1 if count_ones > count_zeros else 0
+
+def get_if_graph_without_owners(dict_owners: Dict) -> bool:
     '''
     Check if the graph has any node with an owner
     '''
-    for node in G.nodes():
-        if G.nodes[node]['data'].owner != None:
-            return False
-    return True
+    return any(value is None for value in dict_owners.values())
 
 def visualize_communities(G: nx.Graph) -> None:
     color_map: List[Optional[int]] = []
@@ -178,13 +196,3 @@ def get_dict_nodes_owner(G: nx.Graph) -> Dict[Any, Optional[int]]:
         dict_nodes[node] = G.nodes[node]['data'].owner
     return dict_nodes
 
-def pseudo_labeling() -> None:
-    '''
-    1 - para cada cluster
-     1 - atribuir: positivo ou negativo 
-    2 - para cada ponto em um cluster negativo
-     1 - calcular a distancia para os centroides de todos os clusters negativos
-     2 - quantifique a dissimilaridade, distancia minima ou distancia media
-    3 - rankear todos os pontos nao-rotulados pela dissimilaridade
-    4 - selecionar os top num_reg
-    '''
