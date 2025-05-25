@@ -3,6 +3,10 @@ import matplotlib.pyplot as plt
 import random
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
+import pandas as pd
+from tqdm import tqdm
+tqdm.pandas
+from collections import defaultdict, Counter
 
 class OrderedSet:
     def __init__(self) -> None:
@@ -87,8 +91,8 @@ def update_particle(
     G: nx.Graph, 
     particle: Particle, 
     node: Any, 
-    delta_v: float = 0.3, 
-    delta_p: float = 0.4
+    delta_v: float,  
+    delta_p: float
 ) -> None:
     '''
     Dynamics of particles and dynamics of nodes
@@ -142,20 +146,71 @@ def run_simulation(
     G: nx.Graph, 
     num_particles: int, 
     #iterations: int, 
-    p_det: float = 0.6
+    p_det: float = 0.6,
+    delta_p: float = 0.4,
+    delta_v: float = 0.3
 ) -> Tuple[nx.Graph, List[Particle]]:
     particles: List[Particle] = [Particle(i) for i in range(num_particles)]
     for node in G.nodes():
         G.nodes[node]['data'] = Node()  # add the custom Node object as a node attribute
 
-    while check_average_node_potential(G):
+    while check_average_node_potential(G)[1]:
         for particle in particles:
             node = move_particle(particle, G, p_det)
-            update_particle(G, particle, node)
+            update_particle(G, particle, node, delta_v, delta_p)
 
     return G, particles
 
-def check_average_node_potential(G: nx.Graph) -> bool:
+def get_optimal_K( G: nx.Graph, 
+    K: List[int], 
+    p_det: float = 0.6,
+    delta_p: float = 0.4,
+    delta_v: float = 0.3):
+
+    potential_list = []
+    for k in tqdm(range(2, K, 2)):
+        G, _ = run_simulation(G, k, p_det=p_det, delta_p=delta_p, delta_v=delta_v)
+        potential_list.append(check_average_node_potential(G)[0])
+    return potential_list
+
+def calculate_dissimilarity(G: nx.Graph) -> nx.Graph:
+    '''
+    Assign a feature based on majority observed_label within nodes sharing the same owner
+    
+    Args:
+        G: Input graph with node attributes
+    
+    Returns:
+        Modified graph with owner-cluster-based features
+    '''
+    # Get the nodes from positive clusters
+    label_clusters = defaultdict(list)
+    for node, cluster in list(G.nodes(data='cluster_owner')):
+        label_clusters[cluster].append(node)
+        
+    for node_negative in label_clusters[0]:
+        G.nodes[node_negative]['dissimilarity'] = []
+        for node_positive in label_clusters[1]:
+            distance = nx.shortest_path_length(G, source=node_negative, target=node_positive)
+            G.nodes[node_negative]['dissimilarity'].append(distance)
+        G.nodes[node_negative]['dissimilarity'] = np.max(G.nodes[node_negative]['dissimilarity']) 
+    return G
+
+def assign_cluster_labels(G: nx.Graph, df) -> None:
+    '''
+    Assign cluster labels to the nodes based on their owners
+    '''
+    df_dict_clusters = pd.DataFrame.from_dict(get_dict_nodes_owner(G), orient='index',columns=['cluster'])
+    df['cluster'] = df_dict_clusters['cluster']
+
+    for cluster in df['cluster'].unique():
+        arr_labels = df.loc[df['cluster'] == cluster, 'observed_label'].values
+        if check_cluster_label(arr_labels):
+            df.loc[df['cluster'] == cluster, 'cluster_label'] = 1
+        else:
+            df.loc[df['cluster'] == cluster, 'cluster_label'] = 0
+
+def check_average_node_potential(G: nx.Graph, threshold: float = 0.9) -> bool:
     '''
     Check if the average potential of the nodes is greater than 0.5
     '''
@@ -164,7 +219,7 @@ def check_average_node_potential(G: nx.Graph) -> bool:
         node_potential = G.nodes(data=True)[i]['data'].potential
         avg_potential.append(node_potential)
     avg_potential = np.mean(avg_potential)
-    return avg_potential <= 0.9
+    return avg_potential, avg_potential <= 0.9
 
 def check_cluster_label(arr):
     '''
