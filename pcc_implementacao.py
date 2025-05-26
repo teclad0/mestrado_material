@@ -173,6 +173,13 @@ def get_optimal_K( G: nx.Graph,
         potential_list.append(check_average_node_potential(G)[0])
     return potential_list
 
+def rank_nodes_dissimilarity(G: nx.Graph, num_reg: int = 10):
+    '''
+    Rank nodes based on dissimilarity
+    '''
+    data = list(G.nodes(data='dissimilarity'))
+    return sorted(data, key=lambda x: float('-inf') if x[1] is None else x[1], reverse=True)[:num_reg]
+
 def calculate_dissimilarity(G: nx.Graph) -> nx.Graph:
     '''
     Assign a feature based on majority observed_label within nodes sharing the same owner
@@ -194,6 +201,40 @@ def calculate_dissimilarity(G: nx.Graph) -> nx.Graph:
             distance = nx.shortest_path_length(G, source=node_negative, target=node_positive)
             G.nodes[node_negative]['dissimilarity'].append(distance)
         G.nodes[node_negative]['dissimilarity'] = np.max(G.nodes[node_negative]['dissimilarity']) 
+    return G
+
+def assign_owner_cluster_feature(G: nx.Graph) -> nx.Graph:
+    '''
+    Assign a feature based on majority observed_label within nodes sharing the same owner
+    
+    Args:
+        G: Input graph with node attributes
+        feature_name: Name of the new feature to create
+    
+    Returns:
+        Modified graph with owner-cluster-based features
+    '''
+    # Step 1: Group nodes by their owner
+    owner_groups = defaultdict(list)
+    for node in G.nodes:
+        owner = G.nodes[node]['data'].owner
+        owner_groups[owner].append(node)
+    
+    # Step 2: Process each owner cluster
+    for owner, nodes in owner_groups.items():
+        # Collect observed labels for this owner's nodes
+        observed_labels = [G.nodes[n]['observed_label'] for n in nodes]
+        
+        # Calculate majority label (prefer 1 in case of tie)
+        label_counts = Counter(observed_labels)
+        majority_label = max(label_counts, 
+                           key=lambda k: (label_counts[k], k))  # (count, label value)
+        
+        # Assign feature to all nodes in this owner cluster
+        cluster_value = 1 if majority_label == 1 else 0
+        for node in nodes:
+            G.nodes[node]['cluster_owner'] = cluster_value
+    
     return G
 
 def assign_cluster_labels(G: nx.Graph, df) -> None:
