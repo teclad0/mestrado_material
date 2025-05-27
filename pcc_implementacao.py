@@ -152,9 +152,9 @@ def run_simulation(
 ) -> Tuple[nx.Graph, List[Particle]]:
     particles: List[Particle] = [Particle(i) for i in range(num_particles)]
     for node in G.nodes():
-        G.nodes[node]['data'] = Node()  # add the custom Node object as a node attribute
+        G.nodes[node]['data'] = Node()  
 
-    while check_average_node_potential(G)[1]:
+    while check_average_node_potential(G)[1] and check_positive_cluster(G):
         for particle in particles:
             node = move_particle(particle, G, p_det)
             update_particle(G, particle, node, delta_v, delta_p)
@@ -172,6 +172,33 @@ def get_optimal_K( G: nx.Graph,
         G, _ = run_simulation(G, k, p_det=p_det, delta_p=delta_p, delta_v=delta_v)
         potential_list.append(check_average_node_potential(G)[0])
     return potential_list
+
+def check_positive_cluster(G: nx.Graph) -> bool:
+    '''
+    Check if the graph has at least one positive cluster
+    '''
+    owner_groups = defaultdict(list)
+    for node in G.nodes:
+        owner = G.nodes[node]['data'].owner
+        owner_groups[owner].append(node)
+    
+    # Step 2: Process each owner cluster
+    for owner, nodes in owner_groups.items():
+        if len(nodes) >=3: # Only consider clusters with at least 3 nodes
+            # Collect observed labels for this owner's nodes
+            observed_labels = [G.nodes[n]['observed_label'] for n in nodes]
+        
+            # Calculate majority label (prefer 1 in case of tie)
+            label_counts = Counter(observed_labels)
+            majority_label = max(label_counts, 
+                               key=lambda k: (label_counts[k], k))  # (count, label value)
+        
+            # Assign feature to all nodes in this owner cluster
+            if majority_label == 1:
+                # If a positive cluster is found, return False
+                return False            
+    # If no positive cluster is found, return True
+    return True
 
 def rank_nodes_dissimilarity(G: nx.Graph, num_reg: int = 10):
     '''
@@ -224,7 +251,6 @@ def assign_owner_cluster_feature(G: nx.Graph) -> nx.Graph:
     for owner, nodes in owner_groups.items():
         # Collect observed labels for this owner's nodes
         observed_labels = [G.nodes[n]['observed_label'] for n in nodes]
-        
         # Calculate majority label (prefer 1 in case of tie)
         label_counts = Counter(observed_labels)
         majority_label = max(label_counts, 
