@@ -286,7 +286,7 @@ def check_average_node_potential(G: nx.Graph, threshold: float = 0.9) -> bool:
         node_potential = G.nodes(data=True)[i]['data'].potential
         avg_potential.append(node_potential)
     avg_potential = np.mean(avg_potential)
-    return avg_potential, avg_potential <= 0.9
+    return avg_potential, avg_potential <= threshold
 
 def check_cluster_label(arr):
     '''
