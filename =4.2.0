@@ -1,0 +1,23 @@
+Collecting nbformat
+  Downloading nbformat-5.10.4-py3-none-any.whl (78 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 78.5/78.5 KB 1.0 MB/s eta 0:00:00
+Collecting fastjsonschema>=2.15
+  Downloading fastjsonschema-2.21.1-py3-none-any.whl (23 kB)
+Requirement already satisfied: traitlets>=5.1 in ./env/lib/python3.10/site-packages (from nbformat) (5.14.3)
+Requirement already satisfied: jupyter-core!=5.0.*,>=4.12 in ./env/lib/python3.10/site-packages (from nbformat) (5.8.1)
+Collecting jsonschema>=2.6
+  Downloading jsonschema-4.24.0-py3-none-any.whl (88 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 88.7/88.7 KB 1.6 MB/s eta 0:00:00
+Collecting jsonschema-specifications>=2023.03.6
+  Downloading jsonschema_specifications-2025.4.1-py3-none-any.whl (18 kB)
+Collecting rpds-py>=0.7.1
+  Downloading rpds_py-0.25.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (386 kB)
+     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 387.0/387.0 KB 1.1 MB/s eta 0:00:00
+Collecting referencing>=0.28.4
+  Downloading referencing-0.36.2-py3-none-any.whl (26 kB)
+Collecting attrs>=22.2.0
+  Using cached attrs-25.3.0-py3-none-any.whl (63 kB)
+Requirement already satisfied: platformdirs>=2.5 in ./env/lib/python3.10/site-packages (from jupyter-core!=5.0.*,>=4.12->nbformat) (4.3.8)
+Requirement already satisfied: typing-extensions>=4.4.0 in ./env/lib/python3.10/site-packages (from referencing>=0.28.4->jsonschema>=2.6->nbformat) (4.14.0)
+Installing collected packages: fastjsonschema, rpds-py, attrs, referencing, jsonschema-specifications, jsonschema, nbformat
+Successfully installed attrs-25.3.0 fastjsonschema-2.21.1 jsonschema-4.24.0 jsonschema-specifications-2025.4.1 nbformat-5.10.4 referencing-0.36.2 rpds-py-0.25.1

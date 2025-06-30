@@ -8,6 +8,65 @@ from tqdm import tqdm
 tqdm.pandas
 from collections import defaultdict, Counter
 
+
+
+class OrderedSet:
+    """Maintains insertion order while ensuring uniqueness"""
+    def __init__(self) -> None:
+        self.items: List[Any] = []
+        self.set: set = set()  # Tracks uniqueness
+
+    def add(self, value: Any) -> None:
+        """Adds a unique value while maintaining order."""
+        if value not in self.set:
+            self.items.append(value)
+            self.set.add(value)
+
+    def remove_last(self) -> Any:
+        """Removes and returns the last item."""
+        if self.items:
+            value = self.items.pop()  # Remove from the list
+            self.set.remove(value)  # Remove from the set
+            return value
+        raise IndexError("remove_last() called on empty OrderedSet")
+
+    def get_last(self) -> Any:
+        """Returns the last item without removing it."""
+        if self.items:
+            return self.items[-1]
+        raise IndexError("get_last() called on empty OrderedSet")
+
+    def __contains__(self, value: Any) -> bool:
+        """Check if the value exists in the set."""
+        return value in self.set
+
+    def __iter__(self):
+        """Allows iteration over the items."""
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        """Returns the number of items."""
+        return len(self.items)
+
+    def __repr__(self) -> str:
+        """String representation of the OrderedSet."""
+        return f"OrderedSet({self.items})"
+
+
+class Particle:
+    """Represents a particle in the competition model"""
+    def __init__(self, id: int) -> None:
+        self.id: int = id
+        self.potential: float = 0.05  # min potential
+        self.visited_nodes: OrderedSet = OrderedSet() # owned nodes
+
+class Node:
+    """Represents a node in the graph"""
+    def __init__(self) -> None:
+        self.owner: Optional[int] = None  # Owner particle (0 if free)
+        self.potential: float = 0.05  # Initial potential (min)
+
+
 class OrderedSet:
     def __init__(self) -> None:
         self.items: List[Any] = []
