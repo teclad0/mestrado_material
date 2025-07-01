@@ -137,11 +137,11 @@ class ParticleCompetitionModel:
             
                 # Assign feature to all nodes in this owner cluster
                 if majority_label == 1:
-                    # If a positive cluster is found, return False
-                    return False      
+                    # If a positive cluster is found, return True
+                    return True
 
-        # If no positive cluster is found, return True
-        return True
+        # If no positive cluster is found, return False
+        return False
     
 
     def check_average_node_potential(self, 
@@ -259,83 +259,79 @@ class ParticleCompetitionModel:
 #     return potential_list
 
 
-
-def rank_nodes_dissimilarity(G: nx.Graph, num_reg: int = 10):
-    '''
-    Rank nodes based on dissimilarity
-    '''
-    data = list(G.nodes(data='dissimilarity'))
-    return sorted(data, key=lambda x: float('-inf') if x[1] is None else x[1], reverse=True)[:num_reg]
-
-def calculate_dissimilarity(G: nx.Graph) -> nx.Graph:
-    '''
-    Assign a feature based on majority observed_label within nodes sharing the same owner
+class MCLS:
+    """
+    Class to handle the MCLS algorithm for clustering nodes in a graph.
+    """
     
-    Args:
-        G: Input graph with node attributes
-    
-    Returns:
-        Modified graph with owner-cluster-based features
-    '''
-    # Get the nodes from positive clusters
-    label_clusters = defaultdict(list)
-    for node, cluster in list(G.nodes(data='cluster_owner')):
-        label_clusters[cluster].append(node)
+    def __init__(self, G: nx.Graph):
+        self.graph = G
+
+    def assign_cluster_label(self):
+        '''
+        Assign a feature based on majority observed_label within nodes sharing the same owner
         
-    for node_negative in label_clusters[0]:
-        G.nodes[node_negative]['dissimilarity'] = []
-        for node_positive in label_clusters[1]:
-            distance = nx.shortest_path_length(G, source=node_negative, target=node_positive)
-            G.nodes[node_negative]['dissimilarity'].append(distance)
-        G.nodes[node_negative]['dissimilarity'] = np.max(G.nodes[node_negative]['dissimilarity']) 
-    return G
-
-def assign_owner_cluster_feature(G: nx.Graph) -> nx.Graph:
-    '''
-    Assign a feature based on majority observed_label within nodes sharing the same owner
-    
-    Args:
-        G: Input graph with node attributes
-        feature_name: Name of the new feature to create
-    
-    Returns:
-        Modified graph with owner-cluster-based features
-    '''
-    # Step 1: Group nodes by their owner
-    owner_groups = defaultdict(list)
-    for node in G.nodes:
-        owner = G.nodes[node]['data'].owner
-        owner_groups[owner].append(node)
-    
-    # Step 2: Process each owner cluster
-    for owner, nodes in owner_groups.items():
-        # Collect observed labels for this owner's nodes
-        observed_labels = [G.nodes[n]['observed_label'] for n in nodes]
-        # Calculate majority label (prefer 1 in case of tie)
-        label_counts = Counter(observed_labels)
-        majority_label = max(label_counts, 
-                           key=lambda k: (label_counts[k], k))  # (count, label value)
+        Args:
+            G: Input graph with node attributes
+            feature_name: Name of the new feature to create
         
-        # Assign feature to all nodes in this owner cluster
-        cluster_value = 1 if majority_label == 1 else 0
-        for node in nodes:
-            G.nodes[node]['cluster_owner'] = cluster_value
-    
-    return G
+        Returns:
+            Modified graph with owner-cluster-based features
+        '''
+        # Step 1: Group nodes by their owner
+        owner_groups = defaultdict(list)
+        for node in self.graph.nodes:
+            owner = self.graph.nodes[node]['data'].owner
+            owner_groups[owner].append(node)
+        # Step 2: Process each owner cluster
+        for owner, nodes in owner_groups.items():
+            # Collect observed labels for this owner's nodes
+            observed_labels = [self.graph.nodes[n]['observed_label'] for n in nodes]
+            # Calculate majority label (prefer 1 in case of tie)
+            label_counts = Counter(observed_labels)
+            majority_label = max(label_counts, 
+                            key=lambda k: (label_counts[k], k))  # (count, label value)
+            
+            # Assign feature to all nodes in this owner cluster
+            cluster_value = 1 if majority_label == 1 else 0
+            for node in nodes:
+                self.graph.nodes[node]['cluster_positive'] = cluster_value
 
-def assign_cluster_labels(G: nx.Graph, df) -> None:
-    '''
-    Assign cluster labels to the nodes based on their owners
-    '''
-    df_dict_clusters = pd.DataFrame.from_dict(get_dict_nodes_owner(G), orient='index',columns=['cluster'])
-    df['cluster'] = df_dict_clusters['cluster']
+    def calculate_dissimilarity(self) -> nx.Graph:
+        '''
+        Assign a feature based on majority observed_label within nodes sharing the same owner
+        
+        Args:
+            G: Input graph with node attributes
+        
+        Returns:
+            Modified graph with owner-cluster-based features
+        '''
+        # Get the nodes from positive clusters
+        label_clusters = defaultdict(list)
+        for node, cluster in list(self.graph.nodes(data='cluster_positive')):
+            label_clusters[cluster].append(node)
+        #import ipdb; ipdb.set_trace()
+        for node_negative in label_clusters[0]:
+            self.graph.nodes[node_negative]['dissimilarity'] = []
+            for node_positive in label_clusters[1]:
+                distance = nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
+                self.graph.nodes[node_negative]['dissimilarity'].append(distance)
+            self.graph.nodes[node_negative]['dissimilarity'] = max(self.graph.nodes[node_negative]['dissimilarity']) 
+       
 
-    for cluster in df['cluster'].unique():
-        arr_labels = df.loc[df['cluster'] == cluster, 'observed_label'].values
-        if check_cluster_label(arr_labels):
-            df.loc[df['cluster'] == cluster, 'cluster_label'] = 1
-        else:
-            df.loc[df['cluster'] == cluster, 'cluster_label'] = 0
+    def rank_nodes_dissimilarity(self, num_reg: int = 10):
+        '''
+        Rank nodes based on dissimilarity
+        '''
+        data = list(self.graph.nodes(data='dissimilarity'))
+        return sorted(data, key=lambda x: float('-inf') if x[1] is None else x[1], reverse=True)[:num_reg]
+
+
+
+
+
+
 
 
 def check_cluster_label(arr):
