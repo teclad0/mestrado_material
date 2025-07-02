@@ -9,6 +9,46 @@ tqdm.pandas
 from collections import defaultdict, Counter
 from core import Particle, Node
 
+def is_cluster_positive(
+    graph: nx.Graph, 
+    nodes_in_cluster: List[Any], 
+    strategy: str,
+    threshold: float = 0.5,
+    positive_label: int = 1
+) -> bool:
+    """
+    Determines if a cluster of nodes is 'positive' based on a given strategy.
+
+    Args:
+        graph: The NetworkX graph containing node attributes.
+        nodes_in_cluster: A list of node IDs belonging to the cluster.
+        strategy: The strategy to use ('majority' or 'percentage').
+        threshold: The percentage threshold required for the 'percentage' strategy (e.g., 0.3 for 30%).
+        positive_label: The label value representing the positive class (default: 1).
+
+    Returns:
+        True if the cluster is considered positive, False otherwise.
+    """
+    if not nodes_in_cluster:
+        return False
+
+    observed_labels = [graph.nodes[n]['observed_label'] for n in nodes_in_cluster]
+
+    if strategy == 'majority':
+        label_counts = Counter(observed_labels)
+        # Handles ties by preferring the higher label value (1 over 0)
+        majority_label = max(label_counts, key=lambda k: (label_counts.get(k, 0), k))
+        return majority_label == positive_label
+
+    elif strategy == 'percentage':
+        count_positives = observed_labels.count(positive_label)
+        percentage_positives = count_positives / len(nodes_in_cluster)
+        return percentage_positives >= threshold
+
+    else:
+        raise ValueError(f"Unknown strategy: '{strategy}'. Choose 'majority' or 'percentage'.")
+
+
 class ParticleCompetitionModel:
     """Main class implementing the particle competition algorithm"""
     
@@ -18,7 +58,9 @@ class ParticleCompetitionModel:
         num_particles: int,
         p_det: float = 0.6,
         delta_p: float = 0.4,
-        delta_v: float = 0.3
+        delta_v: float = 0.3,
+        cluster_strategy: str = 'majority',
+        positive_cluster_threshold: float = 0.5
     ):
         self.graph = graph
         self.num_particles = num_particles
@@ -27,6 +69,8 @@ class ParticleCompetitionModel:
         self.delta_v = delta_v
         self.particles: List[Particle] = []
         
+        self.cluster_strategy = cluster_strategy
+        self.positive_cluster_threshold = positive_cluster_threshold
         # Initialize graph nodes
         for node in self.graph.nodes:
             self.graph.nodes[node]['data'] = Node()
@@ -114,34 +158,30 @@ class ParticleCompetitionModel:
                 return n
         return None
     
-    #[] TODO: rever essa estrategia
     def check_positive_cluster_existence(self) -> bool:
-        '''
-        Check if the graph has at least one positive cluster
-        '''
-        owner_groups = defaultdict(list)
-        for node in self.graph.nodes:
-            owner = self.graph.nodes[node]['data'].owner
-            owner_groups[owner].append(node)
-        
-        # Step 2: Process each owner cluster
-        for owner, nodes in owner_groups.items():
-            if len(nodes) >=3: # Only consider clusters with at least 3 nodes
-                # Collect observed labels for this owner's nodes
-                observed_labels = [self.graph.nodes[n]['observed_label'] for n in nodes]
+            """
+            Check if the graph has at least one positive cluster using the specified strategy.
+            """
+            owner_groups = defaultdict(list)
+            for node in self.graph.nodes:
+                owner = self.graph.nodes[node]['data'].owner
+                if owner is not None: # Only consider owned nodes
+                    owner_groups[owner].append(node)
             
-                # Calculate majority label (prefer 1 in case of tie)
-                label_counts = Counter(observed_labels)
-                majority_label = max(label_counts, 
-                                key=lambda k: (label_counts[k], k))  # (count, label value)
-            
-                # Assign feature to all nodes in this owner cluster
-                if majority_label == 1:
-                    # If a positive cluster is found, return True
-                    return True
+            # Process each owner cluster
+            for owner, nodes in owner_groups.items():
+                if len(nodes) >= 3: # Only consider clusters with at least 3 nodes
+                    # --- USE THE HELPER FUNCTION ---
+                    if is_cluster_positive(
+                        self.graph, 
+                        nodes, 
+                        self.cluster_strategy, 
+                        self.positive_cluster_threshold
+                    ):
+                        return True  # Found one positive cluster, can stop early
 
-        # If no positive cluster is found, return False
-        return False
+            # If no positive cluster is found after checking all groups
+            return False
     
 
     def check_average_node_potential(self, 
@@ -264,8 +304,15 @@ class MCLS:
     Class to handle the MCLS algorithm for clustering nodes in a graph.
     """
     
-    def __init__(self, G: nx.Graph):
+    def __init__(
+        self, 
+        G: nx.Graph,
+        cluster_strategy: str = 'majority',
+        positive_cluster_threshold: float = 0.5
+    ):
         self.graph = G
+        self.cluster_strategy = cluster_strategy
+        self.positive_cluster_threshold = positive_cluster_threshold
 
     def assign_cluster_label(self):
         '''
@@ -283,19 +330,22 @@ class MCLS:
         for node in self.graph.nodes:
             owner = self.graph.nodes[node]['data'].owner
             owner_groups[owner].append(node)
-        # Step 2: Process each owner cluster
+        # Process each owner cluster
         for owner, nodes in owner_groups.items():
-            # Collect observed labels for this owner's nodes
-            observed_labels = [self.graph.nodes[n]['observed_label'] for n in nodes]
-            # Calculate majority label (prefer 1 in case of tie)
-            label_counts = Counter(observed_labels)
-            majority_label = max(label_counts, 
-                            key=lambda k: (label_counts[k], k))  # (count, label value)
+            # --- USE THE HELPER FUNCTION ---
+            is_positive = is_cluster_positive(
+                self.graph, 
+                nodes, 
+                self.cluster_strategy, 
+                self.positive_cluster_threshold
+            )
+            
+            cluster_value = 1 if is_positive else 0
             
             # Assign feature to all nodes in this owner cluster
-            cluster_value = 1 if majority_label == 1 else 0
             for node in nodes:
                 self.graph.nodes[node]['cluster_positive'] = cluster_value
+
 
     def calculate_dissimilarity(self) -> nx.Graph:
         '''
