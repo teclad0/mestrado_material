@@ -7,7 +7,7 @@ import pandas as pd
 from tqdm import tqdm
 tqdm.pandas
 from collections import defaultdict, Counter
-from core import Particle, Node
+from core import Particle
 
 def is_cluster_positive(
     graph: nx.Graph, 
@@ -60,26 +60,85 @@ class ParticleCompetitionModel:
         delta_p: float = 0.4,
         delta_v: float = 0.3,
         cluster_strategy: str = 'majority',
-        positive_cluster_threshold: float = 0.5
+        positive_cluster_threshold: float = 0.5, 
+        movement_strategy: str = 'degree_weighted'  
     ):
         self.graph = graph
-        self.num_particles = num_particles
+        self.degrees = dict(graph.degree())
+        self.neighbors_dict = {node: list(graph.neighbors(node)) for node in graph.nodes}
+        self.neighbor_degrees = {}
+        self.num_particles = num_particles        
         self.p_det = p_det
         self.delta_p = delta_p
         self.delta_v = delta_v
-        self.particles: List[Particle] = []
-        
+        self.particles: List[Particle] = []        
         self.cluster_strategy = cluster_strategy
         self.positive_cluster_threshold = positive_cluster_threshold
+        self.movement_strategy = movement_strategy
+
         # Initialize graph nodes
         for node in self.graph.nodes:
-            self.graph.nodes[node]['data'] = Node()
+            self.graph.nodes[node]['owner'] = None
+            self.graph.nodes[node]['potential'] = 0.05
+            nbrs = self.neighbors_dict[node]
+            self.neighbor_degrees[node] = tuple(self.degrees[n] for n in nbrs)
         
         # Initialize particles
         self.initialize_particles()
 
         # Run the simulation
         #self.graph_populated = self._run_simulation()
+        if self.movement_strategy not in ['uniform', 'degree_weighted']:
+            raise ValueError("movement_strategy must be 'uniform' or 'degree_weighted'")
+        
+        self._precompute_network_data()
+
+    def _precompute_network_data(self):
+        """One-time precomputation for efficiency"""
+        self.degrees = dict(self.graph.degree())
+        
+        # Only compute these if using degree_weighted strategy
+        if self.movement_strategy == 'degree_weighted':
+            self.neighbors_dict = {}
+            self.neighbor_degrees = {}
+            
+            for node in self.graph.nodes:
+                neighbors = list(self.graph.neighbors(node))
+                self.neighbors_dict[node] = neighbors
+                self.neighbor_degrees[node] = [self.degrees[n] for n in neighbors]
+
+    def _degree_weighted_choice(self, neighbors, current_node):
+        """Degree-weighted random selection from neighbors"""
+        # Use precomputed degrees if available
+        if hasattr(self, 'neighbor_degrees'):
+            degrees = self.neighbor_degrees[current_node]
+        else:
+            # Compute on the fly if not precomputed
+            degrees = [self.graph.degree[n] for n in neighbors]
+        
+        total = sum(degrees)
+        if total == 0:
+            return random.choice(neighbors)
+        
+        r = random.random() * total
+        cumulative = 0
+        for i, deg in enumerate(degrees):
+            cumulative += deg
+            if cumulative >= r:
+                return neighbors[i]
+        return neighbors[-1]
+    
+    def _get_distinct_start_node(self, particle):
+        """Get unique high-degree start node for particle"""
+        if not hasattr(self, '_candidate_nodes'):
+            # Get top 2*K high-degree nodes
+            nodes = sorted(self.graph.nodes, 
+                          key=lambda n: self.degrees[n],
+                          reverse=True)
+            self._candidate_nodes = nodes[:min(len(nodes), self.num_particles * 2)]
+        
+        # Assign based on particle ID
+        return self._candidate_nodes[particle.id % len(self._candidate_nodes)]
     
     def initialize_particles(self):
         """Create particle instances"""
@@ -96,18 +155,54 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         graph (Graph): graph
         '''
+        
         if len(particle.visited_nodes) == 0: # Checks if it's the first iteration of the particle
-            return random.choice(list(self.graph.nodes))
+            #print(f"Particle {particle.id} is starting at a random node.")
+            # Get top-k high-degree nodes for k particles
+            if not hasattr(self, 'candidate_nodes'):
+                self.candidate_nodes = sorted(
+                    self.graph.nodes, 
+                    key=lambda n: self.degrees[n], 
+                    reverse=True
+                )[:self.num_particles * 2]  # 2x buffer
+                
+            # Assign distinct starting points using particle ID
+            start_index = particle.id % len(self.candidate_nodes)
+            return self.candidate_nodes[start_index]
+        
+        current_node = particle.visited_nodes.get_last()
+        
+        # Retrieve precomputed values
+        neighbors = self.neighbors_dict[current_node]
+        nbr_degrees = self.neighbor_degrees[current_node]
+
+        # After getting neighbors
+        # if len(particle.visited_nodes) > 1:
+        #     last_node = particle.visited_nodes.items[-2]  # Previous node
+        #     if last_node in neighbors and len(neighbors) > 1:
+        #         neighbors.remove(last_node)  # Disallow immediate backtrack
+
+            #return random.choice(list(self.graph.nodes))
         if random.random() < self.p_det:  # Deterministic movement
             # Prefer to visit owned nodes
-            owned_nodes = [n for n in particle.visited_nodes if self.graph.has_node(n)]
+            owned_nodes = [n for n in particle.visited_nodes 
+                  if self.graph.nodes[n]['owner'] == particle.id]
+            #print(f"Owned nodes for particle {particle.id}: {owned_nodes}")
             if owned_nodes:
                 return random.choice(owned_nodes)
-        else:
-            # Random movement - select from current neighbors
-            current_node = particle.visited_nodes.get_last()
-            neighbors = list(self.graph.neighbors(current_node))
-            return random.choice(neighbors)
+            
+        # Degree-weighted selection
+        total_degree = sum(nbr_degrees)
+        r = random.random() * total_degree
+        cumulative = 0
+        
+        # Walker's alias method O(1) variant
+        for i, deg in enumerate(nbr_degrees):
+            cumulative += deg
+            if cumulative >= r:
+                return neighbors[i]
+        
+        return neighbors[-1]  # Fallback
 
     def update_particle(self,
         particle: Particle, 
@@ -120,81 +215,80 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         node(Node): node the particle selected
         '''
-        if self.graph.nodes[node]['data'].owner == None:
-            # Case 1: node is free
-            particle.visited_nodes.add(node) # add to particle's owned nodes
-            self.graph.nodes[node]['data'].owner = particle.id # add particle to the node's current owner
-            self.graph.nodes[node]['data'].potential = particle.potential # unowned node receives the new owner potential
-        elif self.graph.nodes[node]['data'].owner == particle.id:
-            # Case 2: node it's owned by the current particle
-            particle.potential = particle.potential + ((1 - particle.potential) * self.delta_p)  # increase potential
-            particle.potential = min(1, particle.potential)
-            self.graph.nodes[node]['data'].potential = particle.potential # node receives the node's potential
+        current_owner = self.graph.nodes[node]['owner']
+        current_potential = self.graph.nodes[node]['potential']
 
+        if current_owner is None:
+            # Case 1: Node is free
+            particle.visited_nodes.add(node)
+            self.graph.nodes[node]['owner'] = particle.id
+            self.graph.nodes[node]['potential'] = particle.potential
+            
+        elif current_owner == particle.id:
+            # Case 2: Node owned by current particle
+            particle.potential = min(1, particle.potential + (1 - particle.potential) * self.delta_p)
+            self.graph.nodes[node]['potential'] = particle.potential
+            
         else:
-            # Case 3: node it's owned by another particle
-            particle.potential = particle.potential - ((particle.potential - 0.05) * self.delta_p)  # decrease potential
-            self.graph.nodes[node]['data'].potential = self.graph.nodes[node]['data'].potential - self.delta_v  # decrease node potential
+            # Case 3: Node owned by another particle
+            particle.potential = particle.potential - (particle.potential - 0.05) * self.delta_p
+            self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
+            
+            # Remove from particle's owned nodes if present
             if node in particle.visited_nodes:
-                particle.visited_nodes.remove_last() # pops the particle from the node's visited nodes if the node got owned by another particle
-
-            if particle.potential < 0.05:
-                #If particle is reduced below min, it is reset to a randomly chosen node and 
-                # its potential is setto the minimum level, min.
+                particle.visited_nodes.remove(node)
+                
+            # Reset particle if potential too low
+            if particle.potential <= 0.05:
                 particle.potential = 0.05
-                free_node = self.get_free_node(self.graph)
-                particle.visited_nodes = [free_node]
-                self.graph.nodes[free_node]['data'].owner = particle.id
+                if free_node := self.get_free_node():
+                    particle.visited_nodes.add(free_node)
+                    self.graph.nodes[free_node]['owner'] = particle.id
 
-            if self.graph.nodes[node]['data'].potential < 0.05:
-                self.graph.nodes[node]['data'].owner = None  # node becomes unowned
+            # Free node if potential too low
+            if self.graph.nodes[node]['potential'] <= 0.05:
+                self.graph.nodes[node]['owner'] = None
 
     def get_free_node(self) -> Optional[Any]:
-        '''
-        Get a node that is free for a reseted particle
-        '''
-        for n in self.graph.nodes():
-            if self.graph[n]['data'].owner == None:
-                return n
-        return None
+        return next(
+            (n for n in self.graph.nodes if self.graph.nodes[n]['owner'] is None),
+            None
+        )
     
     def check_positive_cluster_existence(self) -> bool:
-            """
-            Check if the graph has at least one positive cluster using the specified strategy.
-            """
-            owner_groups = defaultdict(list)
-            for node in self.graph.nodes:
-                owner = self.graph.nodes[node]['data'].owner
-                if owner is not None: # Only consider owned nodes
-                    owner_groups[owner].append(node)
-            
-            # Process each owner cluster
-            for owner, nodes in owner_groups.items():
-                if len(nodes) >= 3: # Only consider clusters with at least 3 nodes
-                    # --- USE THE HELPER FUNCTION ---
-                    if is_cluster_positive(
-                        self.graph, 
-                        nodes, 
-                        self.cluster_strategy, 
-                        self.positive_cluster_threshold
-                    ):
-                        return True  # Found one positive cluster, can stop early
-
-            # If no positive cluster is found after checking all groups
-            return False
+        """
+        Check if the graph has at least one positive cluster using the specified strategy.
+        """
+        owner_groups = defaultdict(list)
+        for node in self.graph.nodes:
+            if (owner := self.graph.nodes[node]['owner']) is not None:
+                owner_groups[owner].append(node)
+        
+        return any(
+            len(nodes) >= 3 and is_cluster_positive(
+                self.graph,
+                nodes,
+                self.cluster_strategy,
+                self.positive_cluster_threshold
+            )
+            for nodes in owner_groups.values()
+        )
     
 
     def check_average_node_potential(self, 
                                     threshold: float = 0.9) -> bool:
         '''
-        Check if the average potential of the nodes is greater than 0.5
+        Check if the average potential of the nodes is greater than threshold
         '''
-        avg_potential = []
-        for i in range(len(self.graph.nodes())):
-            node_potential = self.graph.nodes(data=True)[i]['data'].potential
-            avg_potential.append(node_potential)
-        avg_potential = np.mean(avg_potential)
-        return avg_potential, avg_potential <= threshold
+        potentials = [data['potential'] for _, data in self.graph.nodes(data=True)]
+        avg = np.mean(potentials)
+        return avg, avg <= threshold
+
+    def has_unowned_nodes(self) -> bool:
+        '''
+        Check if the graph has any node with an owner
+        '''
+        return any(data['owner'] is None for _, data in self.graph.nodes(data=True))
 
     def graph_without_owners(self) -> bool:
         '''
@@ -213,7 +307,7 @@ class ParticleCompetitionModel:
 
     def run_simulation(self, max_iterations = 200) -> Tuple[nx.Graph, List[Particle]]:
         """Run the main simulation loop."""
-    
+        self.history = [] # Reset history for each new run
         iteration_count = 0
         #max_iterations = 200 # Safety break to prevent accidental infinite loops
 
@@ -228,15 +322,16 @@ class ParticleCompetitionModel:
             no_positive_cluster = not self.check_positive_cluster_existence()
             
             # Condition C: Continue if there are still nodes that don't have an owner.
-            unowned_nodes_exist = self.graph_without_owners()
+            unowned_nodes_exist = self.has_unowned_nodes()
             # --- DEBUGGING ---
             # This print statement is now incredibly useful for seeing the state each iteration.
-            # print(
-            #     f"Iter {iteration_count}: "
-            #     f"Potential Low? {potential_is_low}, "
-            #     f"No Positive Cluster? {no_positive_cluster}, "
-            #     f"Unowned Nodes? {unowned_nodes_exist}"
-            # )
+            print(
+                f"Iter {iteration_count}: "
+                f"Potential Low? {potential_is_low}, "
+                f"Potential Avg: {self.check_average_node_potential()[0]}, "
+                f"No Positive Cluster? {no_positive_cluster}, "
+                f"Unowned Nodes? {unowned_nodes_exist}"
+            )
 
             # Step 2: Check if the loop should stop.
             # The loop stops ONLY when ALL THREE conditions are False.
@@ -251,13 +346,18 @@ class ParticleCompetitionModel:
             #     break
 
             # Step 3: If not stopping, run the simulation logic for one iteration.
-            for particle in self.particles:
-                node = self.move_particle(particle)
-                self.update_particle(particle, node)
-            
-            iteration_count += 1
+            if iteration_count < max_iterations:
+                for particle in self.particles:
+                    node = self.move_particle(particle)
+                    self.update_particle(particle, node)
 
-        return self.graph
+                iteration_count += 1
+            else: 
+                break
+            
+ 
+
+        return self.graph, self.history
 
 
 
@@ -279,10 +379,8 @@ class ParticleCompetitionModel:
     
      
     def visualize_communities(self, G: nx.Graph) -> None:
-        color_map: List[Optional[int]] = []
-        for node in G.nodes:
-            color_map.append(G.nodes[node]['data'].owner)  # Color by owner
-        nx.draw(G, node_color=color_map, with_labels=True)
+        color_map = [self.graph.nodes[n]['owner'] for n in self.graph.nodes]
+        nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
 
 
