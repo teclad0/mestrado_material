@@ -61,7 +61,7 @@ class ParticleCompetitionModel:
         delta_v: float = 0.3,
         cluster_strategy: str = 'majority',
         positive_cluster_threshold: float = 0.5, 
-        movement_strategy: str = 'degree_weighted'  
+        movement_strategy: str = 'uniform'  
     ):
         self.graph = graph
         self.degrees = dict(graph.degree())
@@ -155,54 +155,31 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         graph (Graph): graph
         '''
-        
-        if len(particle.visited_nodes) == 0: # Checks if it's the first iteration of the particle
-            #print(f"Particle {particle.id} is starting at a random node.")
-            # Get top-k high-degree nodes for k particles
-            if not hasattr(self, 'candidate_nodes'):
-                self.candidate_nodes = sorted(
-                    self.graph.nodes, 
-                    key=lambda n: self.degrees[n], 
-                    reverse=True
-                )[:self.num_particles * 2]  # 2x buffer
-                
-            # Assign distinct starting points using particle ID
-            start_index = particle.id % len(self.candidate_nodes)
-            return self.candidate_nodes[start_index]
+    # Handle uninitialized particles
+        if not particle.visited_nodes:
+            return self._get_distinct_start_node(particle)
         
         current_node = particle.visited_nodes.get_last()
+        neighbors = self.neighbors_dict.get(current_node, [])
         
-        # Retrieve precomputed values
-        neighbors = self.neighbors_dict[current_node]
-        nbr_degrees = self.neighbor_degrees[current_node]
-
-        # After getting neighbors
-        # if len(particle.visited_nodes) > 1:
-        #     last_node = particle.visited_nodes.items[-2]  # Previous node
-        #     if last_node in neighbors and len(neighbors) > 1:
-        #         neighbors.remove(last_node)  # Disallow immediate backtrack
-
-            #return random.choice(list(self.graph.nodes))
-        if random.random() < self.p_det:  # Deterministic movement
-            # Prefer to visit owned nodes
-            owned_nodes = [n for n in particle.visited_nodes 
-                  if self.graph.nodes[n]['owner'] == particle.id]
-            #print(f"Owned nodes for particle {particle.id}: {owned_nodes}")
-            if owned_nodes:
-                return random.choice(owned_nodes)
-            
-        # Degree-weighted selection
-        total_degree = sum(nbr_degrees)
-        r = random.random() * total_degree
-        cumulative = 0
+        # # Handle isolated nodes
+        # if not neighbors:
+        #     return current_node
         
-        # Walker's alias method O(1) variant
-        for i, deg in enumerate(nbr_degrees):
-            cumulative += deg
-            if cumulative >= r:
-                return neighbors[i]
+        # Deterministic movement: owned neighbors
+        if random.random() < self.p_det:
+            owned_neighbors = [
+                n for n in neighbors
+                if self.graph.nodes[n]['owner'] == particle.id
+            ]
+            if owned_neighbors:
+                return random.choice(owned_neighbors)
         
-        return neighbors[-1]  # Fallback
+        # Random movement: select based on strategy
+        if self.movement_strategy == 'degree_weighted':
+            return self._degree_weighted_choice(neighbors, current_node)
+        else:  # 'uniform' is default
+            return random.choice(neighbors)
 
     def update_particle(self,
         particle: Particle, 
