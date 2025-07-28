@@ -43,3 +43,10 @@ class Particle:
     def current_position(self) -> Any:
         """Current position is always the last visited node"""
         return self.visited_nodes.get_last()
+    
+    @property
+    def node_visited_last_iteration(self):
+        if len(self.visited_nodes) > 1:
+            return self.visited_nodes.items[-2]
+        # returns a node that doesn't exist 
+        return -1

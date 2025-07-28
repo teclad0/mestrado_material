@@ -157,30 +157,40 @@ class ParticleCompetitionModel:
         '''
     # Handle uninitialized particles
         if not particle.visited_nodes:
-            return self._get_distinct_start_node(particle)
+            # TODO: mudar regra de inicialização -> aleatorio ou degrees
+            # return self._get_distinct_start_node(particle)
+            return random.choice(list(self.graph.nodes))
         
-        current_node = particle.visited_nodes.get_last()
-        neighbors = self.neighbors_dict.get(current_node, [])
-        
-        # # Handle isolated nodes
-        # if not neighbors:
-        #     return current_node
+        current_node = particle.current_position
+        neighbors = self.neighbors_dict.get(current_node, []).copy()
         
         # Deterministic movement: owned neighbors
         if random.random() < self.p_det:
-            owned_neighbors = [
-                n for n in neighbors
-                if self.graph.nodes[n]['owner'] == particle.id
-            ]
-            if owned_neighbors:
-                return random.choice(owned_neighbors)
-        
+            # remove current node if particle is visiting again
+            owned_nodes = [n for n in particle.visited_nodes if n != current_node] 
+
+            if owned_nodes:
+                if particle.node_visited_last_iteration in owned_nodes and \
+                    self.degrees.get(particle.node_visited_last_iteration, 0) != 1:
+                        owned_nodes.remove(particle.node_visited_last_iteration)
+                # check if there the node_visitet_last_iteration wasn't the only one visited
+                if owned_nodes:
+                    return random.choice(owned_nodes)
         # Random movement: select based on strategy
         if self.movement_strategy == 'degree_weighted':
             return self._degree_weighted_choice(neighbors, current_node)
-        else:  # 'uniform' is default
-            return random.choice(neighbors)
-
+        else:  
+            if particle.node_visited_last_iteration in neighbors and \
+                    self.degrees.get(particle.node_visited_last_iteration, 0) != 1:
+                        neighbors.remove(particle.node_visited_last_iteration)
+                        # if there are no neighbors left, it's okay to return the last visited node
+                        if not neighbors:
+                            return particle.node_visited_last_iteration
+            try:
+                return random.choice(neighbors)
+            except IndexError:
+                import ipdb; ipdb.set_trace()
+        
     def update_particle(self,
         particle: Particle, 
         node: Any,
