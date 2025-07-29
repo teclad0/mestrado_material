@@ -62,7 +62,9 @@ class ParticleCompetitionModel:
         cluster_strategy: str = 'majority',
         positive_cluster_threshold: float = 0.5, 
         movement_strategy: str = 'uniform' ,
-        initialization_strategy: str = 'random'
+        initialization_strategy: str = 'random',
+        average_node_potential_threshold: float = 0.7,
+        coverage_graph_threshold: float = 0.8
     ):
         self.graph = graph
         self.degrees = dict(graph.degree())
@@ -77,6 +79,8 @@ class ParticleCompetitionModel:
         self.positive_cluster_threshold = positive_cluster_threshold
         self.movement_strategy = movement_strategy
         self.initialization_strategy = initialization_strategy
+        self.average_node_potential_threshold = average_node_potential_threshold
+        self.coverage_graph_threshold = coverage_graph_threshold
 
         # Initialize graph nodes
         for node in self.graph.nodes:
@@ -310,8 +314,64 @@ class ParticleCompetitionModel:
         self.dict_node_owner: Dict[Any, Optional[int]] = {}
         for node in self.graph.nodes():
             self.dict_node_owner[node] = self.graph.nodes[node]['data'].owner        
+    
+    def get_average_node_potential(self) -> float:
+        """Calculates the average potential of all nodes in the graph."""
+        potentials = [data['potential'] for _, data in self.graph.nodes(data=True)]
+        return np.mean(potentials) if potentials else 0.0
 
-    def run_simulation(self, max_iterations = 200) -> Tuple[nx.Graph, List[Particle]]:
+    def get_graph_coverage(self) -> Tuple[int, float]:
+        """Calculates the number of owned nodes and the coverage percentage."""
+        total_nodes = self.graph.number_of_nodes()
+        if total_nodes == 0:
+            return 0, 0.0
+        
+        num_owned_nodes = sum(1 for _, data in self.graph.nodes(data=True) if data['owner'] is not None)
+        coverage = num_owned_nodes / total_nodes
+        return num_owned_nodes, coverage
+
+    def run_simulation(self, max_iterations=2000) -> nx.Graph:
+        """Run the main simulation loop with clear stopping criteria."""
+        total_nodes = self.graph.number_of_nodes()
+
+        for iteration_count in range(1, max_iterations + 1):
+            # --- Particle Movement and Update Phase ---
+            for particle in self.particles:
+                node = self.move_particle(particle)
+                self.update_particle(particle, node)
+
+            # --- Check Stopping Criteria at the end of the iteration ---
+            # 1. Calculate current state metrics
+            avg_potential = self.get_average_node_potential()
+            num_owned_nodes, coverage = self.get_graph_coverage()
+            positive_cluster_found = self.check_positive_cluster_existence()
+
+            # 2. Check if thresholds are met
+            potential_threshold_met = avg_potential >= self.average_node_potential_threshold
+            coverage_threshold_met = coverage >= self.coverage_graph_threshold
+
+            # --- DEBUGGING ---
+            print(
+                f"\rIter {iteration_count}: "
+                f"Avg Potential: {avg_potential:.4f} (Goal: {self.average_node_potential_threshold}), "
+                f"Coverage: {coverage:.2%} (Goal: {self.coverage_graph_threshold:.0%}), "
+                f"Positive Cluster Found? {positive_cluster_found}",
+                end=""
+            )
+
+            # 3. Apply stopping logic
+            # The simulation can only stop IF a positive cluster has been found.
+            if positive_cluster_found and potential_threshold_met and coverage_threshold_met:
+                print("\n\nStopping criteria met: Positive cluster found, and potential and coverage thresholds reached.")
+                break
+        
+        # This message will be printed if the loop finishes due to max_iterations
+        else:
+            print(f"\n\nStopping simulation: Maximum iterations ({max_iterations}) reached.")
+
+        return self.graph
+
+   # def run_simulation(self, max_iterations = 200) -> Tuple[nx.Graph, List[Particle]]:
         """Run the main simulation loop."""
         iteration_count = 0
         #max_iterations = 200 # Safety break to prevent accidental infinite loops
