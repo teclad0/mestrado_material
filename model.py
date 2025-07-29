@@ -61,7 +61,8 @@ class ParticleCompetitionModel:
         delta_v: float = 0.3,
         cluster_strategy: str = 'majority',
         positive_cluster_threshold: float = 0.5, 
-        movement_strategy: str = 'uniform'  
+        movement_strategy: str = 'uniform' ,
+        initialization_strategy: str = 'random'
     ):
         self.graph = graph
         self.degrees = dict(graph.degree())
@@ -75,6 +76,7 @@ class ParticleCompetitionModel:
         self.cluster_strategy = cluster_strategy
         self.positive_cluster_threshold = positive_cluster_threshold
         self.movement_strategy = movement_strategy
+        self.initialization_strategy = initialization_strategy
 
         # Initialize graph nodes
         for node in self.graph.nodes:
@@ -86,12 +88,28 @@ class ParticleCompetitionModel:
         # Initialize particles
         self.initialize_particles()
 
+        if self.initialization_strategy == 'degree_weighted':
+            # Create a candidate pool at least as large as the number of particles
+            nodes_sorted_by_degree = sorted(
+                self.graph.nodes,
+                key=lambda n: self.degrees[n],
+                reverse=True
+            )
+            # Ensure we have enough unique nodes if the graph is large enough
+            pool_size = min(len(nodes_sorted_by_degree), self.num_particles)
+            self._candidate_start_nodes = nodes_sorted_by_degree[:pool_size]
+            # Shuffle to randomize assignment among the top nodes
+            random.shuffle(self._candidate_start_nodes)
+
         # Run the simulation
         #self.graph_populated = self._run_simulation()
         if self.movement_strategy not in ['uniform', 'degree_weighted']:
             raise ValueError("movement_strategy must be 'uniform' or 'degree_weighted'")
         
-        self._precompute_network_data()
+        if self.initialization_strategy not in ['random', 'degree_weighted']:
+            raise ValueError("initialization_strategy must be 'random' or 'degree_weighted'")
+        
+        #self._precompute_network_data()
 
     def _precompute_network_data(self):
         """One-time precomputation for efficiency"""
@@ -128,17 +146,16 @@ class ParticleCompetitionModel:
                 return neighbors[i]
         return neighbors[-1]
     
-    def _get_distinct_start_node(self, particle):
-        """Get unique high-degree start node for particle"""
-        if not hasattr(self, '_candidate_nodes'):
-            # Get top 2*K high-degree nodes
-            nodes = sorted(self.graph.nodes, 
-                          key=lambda n: self.degrees[n],
-                          reverse=True)
-            self._candidate_nodes = nodes[:min(len(nodes), self.num_particles * 2)]
-        
-        # Assign based on particle ID
-        return self._candidate_nodes[particle.id % len(self._candidate_nodes)]
+    def _get_distinct_start_node(self, particle: Particle) -> Any:
+        """
+        Get a unique high-degree start node for the particle.
+        Ensures each particle gets a different node from the pre-computed
+        candidate pool, preventing collisions.
+        """
+        # The list is already created and shuffled in __init__
+        # Use the modulo operator only as a safeguard in case num_particles > pool_size,
+        # though ideally, the pool should be large enough.
+        return self._candidate_start_nodes[particle.id % len(self._candidate_start_nodes)]
     
     def initialize_particles(self):
         """Create particle instances"""
@@ -157,9 +174,11 @@ class ParticleCompetitionModel:
         '''
     # Handle uninitialized particles
         if not particle.visited_nodes:
-            # TODO: mudar regra de inicialização -> aleatorio ou degrees
-            # return self._get_distinct_start_node(particle)
-            return random.choice(list(self.graph.nodes))
+            if self.initialization_strategy == 'degree_weighted':
+                # Choose a distinct start node based on degree
+                return self._get_distinct_start_node(particle)
+            else:          
+                return random.choice(list(self.graph.nodes))
         
         current_node = particle.current_position
         neighbors = self.neighbors_dict.get(current_node, []).copy()
@@ -294,7 +313,6 @@ class ParticleCompetitionModel:
 
     def run_simulation(self, max_iterations = 200) -> Tuple[nx.Graph, List[Particle]]:
         """Run the main simulation loop."""
-        self.history = [] # Reset history for each new run
         iteration_count = 0
         #max_iterations = 200 # Safety break to prevent accidental infinite loops
 
@@ -309,7 +327,7 @@ class ParticleCompetitionModel:
             no_positive_cluster = not self.check_positive_cluster_existence()
             
             # Condition C: Continue if there are still nodes that don't have an owner.
-            unowned_nodes_exist = self.has_unowned_nodes()
+            #unowned_nodes_exist = self.has_unowned_nodes()
             # --- DEBUGGING ---
             # This print statement is now incredibly useful for seeing the state each iteration.
             print(
@@ -317,72 +335,34 @@ class ParticleCompetitionModel:
                 f"Potential Low? {potential_is_low}, "
                 f"Potential Avg: {self.check_average_node_potential()[0]}, "
                 f"No Positive Cluster? {no_positive_cluster}, "
-                f"Unowned Nodes? {unowned_nodes_exist}"
+              #  f"Unowned Nodes? {unowned_nodes_exist}",
+                f"Num owned nodes: {sum([1 if n[1]['owner'] else 0 for n in self.graph.nodes(data=True)])}"
             )
 
             # Step 2: Check if the loop should stop.
             # The loop stops ONLY when ALL THREE conditions are False.
             # Therefore, it continues if AT LEAST ONE is True.
-            if not (potential_is_low or no_positive_cluster or unowned_nodes_exist):
-                print("All conditions met. Stopping simulation.")
-                break
+         #   if not (potential_is_low or no_positive_cluster or unowned_nodes_exist):
+          #      print("All conditions met. Stopping simulation.")
+           #     break
                 
-            # Safety break
-            # if iteration_count >= max_iterations:
-            #     print(f"Max iterations ({max_iterations}) reached. Stopping.")
-            #     break
-
-            # Step 3: If not stopping, run the simulation logic for one iteration.
             if iteration_count < max_iterations:
                 for particle in self.particles:
                     node = self.move_particle(particle)
                     self.update_particle(particle, node)
+                    
 
                 iteration_count += 1
             else: 
-                break
-            
+                break         
  
 
-        return self.graph, self.history
-
-
-
-    # def run_simulation(self) -> Tuple[nx.Graph, List[Particle]]:
-    #     """Run the main simulation loop"""
-    #     print("teste", self.check_average_node_potential()[1], self._check_positive_cluster_existence(), self.graph_without_owners())
-
-    #     while self.check_average_node_potential()[1] and \
-    #         not self._check_positive_cluster_existence() and \
-    #             self.graph_without_owners():
-
-    #         print("teste2", self.check_average_node_potential()[1], self._check_positive_cluster_existence())
-    #         for particle in self.particles:
-    #             node = self._move_particle(particle)
-    #             self._update_particle(particle, node)
-
-    #     return self.graph
-
-    
+        return self.graph
      
     def visualize_communities(self, G: nx.Graph) -> None:
         color_map = [self.graph.nodes[n]['owner'] for n in self.graph.nodes]
         nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
-
-
-# def get_optimal_K( G: nx.Graph, 
-#     K: List[int], 
-#     p_det: float = 0.6,
-#     delta_p: float = 0.4,
-#     delta_v: float = 0.3):
-
-#     potential_list = []
-#     for k in tqdm(range(2, K, 2)):
-#         G, _ = run_simulation(G, k, p_det=p_det, delta_p=delta_p, delta_v=delta_v)
-#         potential_list.append(check_average_node_potential(G)[0])
-#     return potential_list
-
 
 class MCLS:
     """
