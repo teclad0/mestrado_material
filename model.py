@@ -8,6 +8,10 @@ from tqdm import tqdm
 tqdm.pandas
 from collections import defaultdict, Counter
 from core import Particle
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import TensorDataset, DataLoader
 
 def is_cluster_positive(
     graph: nx.Graph, 
@@ -424,97 +428,304 @@ class ParticleCompetitionModel:
         nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
 
+# Step 2: MCLS for Reliable Negative Selection 
 class MCLS:
-    """
-    Class to handle the MCLS algorithm for clustering nodes in a graph.
-    """
-    
     def __init__(
         self, 
         G: nx.Graph,
         cluster_strategy: str = 'majority',
-        positive_cluster_threshold: float = 0.5
+        positive_cluster_threshold: float = 0.5,
+        dissimilarity_strategy: str = 'shortest_path'
     ):
         self.graph = G
         self.cluster_strategy = cluster_strategy
         self.positive_cluster_threshold = positive_cluster_threshold
+        self.dissimilarity_strategy = dissimilarity_strategy
 
     def assign_cluster_label(self):
-        '''
-        Assign a feature based on majority observed_label within nodes sharing the same owner
-        
-        Args:
-            G: Input graph with node attributes
-            feature_name: Name of the new feature to create
-        
-        Returns:
-            Modified graph with owner-cluster-based features
-        '''
-        # Step 1: Group nodes by their owner
         owner_groups = defaultdict(list)
         for node in self.graph.nodes:
-            owner = self.graph.nodes[node]['data'].owner
-            owner_groups[owner].append(node)
-        # Process each owner cluster
+            owner = self.graph.nodes[node]['owner']
+            if owner is not None:
+                owner_groups[owner].append(node)
         for owner, nodes in owner_groups.items():
-            # --- USE THE HELPER FUNCTION ---
             is_positive = is_cluster_positive(
-                self.graph, 
-                nodes, 
-                self.cluster_strategy, 
-                self.positive_cluster_threshold
+                self.graph, nodes, self.cluster_strategy, self.positive_cluster_threshold
             )
-            
             cluster_value = 1 if is_positive else 0
-            
-            # Assign feature to all nodes in this owner cluster
             for node in nodes:
                 self.graph.nodes[node]['cluster_positive'] = cluster_value
 
-
-    def calculate_dissimilarity(self) -> nx.Graph:
-        '''
-        Assign a feature based on majority observed_label within nodes sharing the same owner
+    def calculate_dissimilarity(self):
+        label_clusters = defaultdict(list)
+        for node, data in self.graph.nodes(data=True):
+            cluster_label = data.get('cluster_positive')
+            if cluster_label is not None:
+                label_clusters[cluster_label].append(node)
         
-        Args:
-            G: Input graph with node attributes
+        positive_nodes = label_clusters.get(1, [])
+        if not positive_nodes:
+            print("Warning: No positive clusters found. Cannot calculate dissimilarity.")
+            return
+
+        for node_negative in label_clusters.get(0, []):
+            if self.dissimilarity_strategy == 'shortest_path':
+                distances = [
+                    nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
+                    for node_positive in positive_nodes
+                ]
+                if distances:
+                    # The dissimilarity is the distance to the *closest* positive node
+                    self.graph.nodes[node_negative]['dissimilarity'] = min(distances)
+            elif self.dissimilarity_strategy == 'jaccard':
+                # Jaccard similarity is |N(u) intersect N(v)| / |N(u) union N(v)|
+                # Dissimilarity is 1 - similarity. We average it over all positive nodes.
+                neg_neighbors = set(self.graph.neighbors(node_negative))
+                dissimilarities = []
+                for node_positive in positive_nodes:
+                    pos_neighbors = set(self.graph.neighbors(node_positive))
+                    intersection_len = len(neg_neighbors.intersection(pos_neighbors))
+                    union_len = len(neg_neighbors.union(pos_neighbors))
+                    if union_len == 0:
+                        jaccard_sim = 0
+                    else:
+                        jaccard_sim = intersection_len / union_len
+                    dissimilarities.append(1 - jaccard_sim)
+                if dissimilarities:
+                    self.graph.nodes[node_negative]['dissimilarity'] = np.mean(dissimilarities)
+
+    def rank_nodes_dissimilarity(self, num_neg: int = 10):
+        # Filter for nodes in negative clusters that have a dissimilarity score
+        data = [
+            (node, data.get('dissimilarity'))
+            for node, data in self.graph.nodes(data=True)
+            if data.get('cluster_positive') == 0 and data.get('dissimilarity') is not None
+        ]
+        # Rank by dissimilarity (higher is better for reliable negatives)
+        return sorted(data, key=lambda x: x[1], reverse=True)[:num_neg]
+
+
+# Step 3: Simple MLP Classifier
+class SimpleMLP(nn.Module):
+    def __init__(self, input_size, hidden_size=64, output_size=1):
+        super(SimpleMLP, self).__init__()
+        self.layers = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, output_size),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        return self.layers(x)
+    
+class DijkstraClustering:
+    """
+    A baseline clustering method that assigns each node to the nearest 
+    positive seed node based on shortest path distance.
+    """
+    def __init__(self, graph: nx.Graph):
+        self.graph = graph.copy()
+
+    def run_simulation(self) -> nx.Graph:
+        """
+        Executes the Dijkstra-based clustering. The "owner" of each node
+        will be the ID of the closest positive node.
+        """
+        # Find all initial positive nodes
+        positive_nodes = [
+            n for n, d in self.graph.nodes(data=True) if d.get('observed_label') == 1
+        ]
+        
+        if not positive_nodes:
+            print("Warning: No positive nodes found in the graph for DijkstraClustering.")
+            return self.graph
+
+        # For each node in the graph, find the closest positive node
+        for node in self.graph.nodes():
+            min_dist = float('inf')
+            closest_positive_node = None
+            
+            for pos_node in positive_nodes:
+                try:
+                    dist = nx.shortest_path_length(self.graph, source=node, target=pos_node)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_positive_node = pos_node
+                except nx.NetworkXNoPath:
+                    continue # Node is not reachable from this positive node
+            
+            # Assign the closest positive node as the "owner"
+            self.graph.nodes[node]['owner'] = closest_positive_node
+
+        return self.graph
+
+
+# Main Wrapper Class for the PU Learning Algorithm
+class PULearningPCC:
+    def __init__(
+        self,
+        graph: nx.Graph,
+        feature_names: List[str],
+        num_neg: int = 20,
+        dissimilarity_strategy: str = 'shortest_path',
+        initialization_method: str = 'particle_competition',
+        # Pass-through parameters for ParticleCompetitionModel
+        pcm_params: Dict[str, Any] = None,
+        # Pass-through parameters for MCLS
+        mcls_params: Dict[str, Any] = None,
+        # Parameters for the MLP classifier
+        mlp_params: Dict[str, Any] = None
+        
+    ):
+        self.graph = graph.copy()
+        self.feature_names = feature_names
+        self.num_neg = num_neg
+        self.dissimilarity_strategy = dissimilarity_strategy
+        self.initialization_method = initialization_method
+        
+        # Set default parameters if not provided
+        self.pcm_params = pcm_params if pcm_params is not None else {}
+        self.mcls_params = mcls_params if mcls_params is not None else {}
+        self.mlp_params = mlp_params if mlp_params is not None else {}
+
+    def _step1_label_initialization(self) -> nx.Graph:
+        print(f"--- Step 1: Running Label Initialization using '{self.initialization_method}' method ---")
+        
+        if self.initialization_method == 'particle_competition':
+            max_iterations = self.pcm_params.pop('max_iterations', 2000)
+            pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
+            return pcm.run_simulation(max_iterations=max_iterations)
+        
+        elif self.initialization_method == 'dijkstra':
+            dijkstra_clusterer = DijkstraClustering(self.graph)
+            return dijkstra_clusterer.run_simulation()
+            
+        else:
+            raise ValueError(f"Unknown initialization_method: '{self.initialization_method}'. "
+                             "Choose 'particle_competition' or 'dijkstra'.")
+
+    def _step2_select_reliable_negatives(self, labeled_graph: nx.Graph) -> Tuple[nx.Graph, List[Any]]:
+        print("\n--- Step 2: Selecting Reliable Negatives using MCLS ---")
+        mcls = MCLS(labeled_graph, dissimilarity_strategy=self.dissimilarity_strategy, **self.mcls_params)
+        mcls.assign_cluster_label()
+        mcls.calculate_dissimilarity()
+        
+        ranked_nodes = mcls.rank_nodes_dissimilarity(num_neg=self.num_neg)
+        reliable_negatives = [node for node, _ in ranked_nodes]
+        
+        print(f"Identified {len(reliable_negatives)} reliable negatives.")
+        return labeled_graph, reliable_negatives
+    def _step3_classification(self, graph_with_rn: nx.Graph, reliable_negatives: List[Any]) -> nx.Graph:
+        print("\n--- Step 3: Training Classifier and Predicting Labels ---")
+        
+        # 1. Prepare unique sets of nodes for training
+        positives = {n for n, d in graph_with_rn.nodes(data=True) if d['observed_label'] == 1}
+        # Ensure reliable negatives are not also in the positive set
+        reliable_negatives_set = {n for n in reliable_negatives if n not in positives}
+        
+        # Create a final, unique, and sorted list of nodes for training
+        train_nodes = sorted(list(positives.union(reliable_negatives_set)))
+        
+        # Handle edge case where no reliable negatives were found
+        if not reliable_negatives_set:
+            print("Warning: No reliable negatives were identified. The classifier will be trained on positive examples only.")
+        
+        # Handle edge case where there is no data to train on at all
+        if not train_nodes:
+             print("CRITICAL WARNING: No training data (positives or reliable negatives) found. Cannot train classifier.")
+             # Return the graph with only the initial positive labels marked.
+             final_graph = graph_with_rn.copy()
+             for node in final_graph.nodes():
+                 final_graph.nodes[node]['final_label'] = final_graph.nodes[node]['observed_label']
+             return final_graph
+
+        # 2. Build feature and label lists with a single, ordered loop
+        X_train_list, y_train_list = [], []
+        for node in train_nodes:
+            node_data = graph_with_rn.nodes[node]
+            features = [node_data.get(feat, 0) for feat in self.feature_names]
+            X_train_list.append(features)
+            
+            label = 1.0 if node in positives else 0.0
+            y_train_list.append([label])
+
+        # 3. Create Tensors and add a sanity check
+        X_train = torch.tensor(X_train_list, dtype=torch.float32)
+        y_train = torch.tensor(y_train_list, dtype=torch.float32)
+
+        # THIS IS THE KEY SANITY CHECK
+        if X_train.shape[0] != y_train.shape[0]:
+            raise RuntimeError(
+                f"FATAL: Mismatch in training data size. "
+                f"Features has {X_train.shape[0]} samples, but Labels has {y_train.shape[0]} samples. "
+                "This should not happen with the current logic. Please check the data."
+            )
+
+        # 4. Prepare data for prediction
+        unlabeled = [
+            n for n, d in graph_with_rn.nodes(data=True) 
+            if n not in train_nodes
+        ]
+        
+        # 5. Train and predict
+        input_size = len(self.feature_names)
+        model = SimpleMLP(input_size, **self.mlp_params)
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(model.parameters(), lr=0.01)
+        
+        dataset = TensorDataset(X_train, y_train)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        
+        epochs = 100
+        for epoch in range(epochs):
+            for inputs, labels in loader:
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+        print("Classifier training complete.")
+
+        # 6. Assign final labels
+        final_graph = graph_with_rn.copy()
+        # Assign labels to the training nodes first
+        for node in train_nodes:
+            final_graph.nodes[node]['final_label'] = 1 if node in positives else 0
+        
+        # Predict on the remaining unlabeled nodes
+        if unlabeled:
+            X_predict = torch.tensor(
+                [[d.get(feat, 0) for feat in self.feature_names] for n, d in graph_with_rn.nodes(data=True) if n in unlabeled],
+                dtype=torch.float32
+            )
+            with torch.no_grad():
+                predictions = model(X_predict)
+                predicted_labels = (predictions > 0.5).float().squeeze().numpy()
+
+            if len(unlabeled) == 1 and isinstance(predicted_labels, np.ndarray) and predicted_labels.ndim == 0:
+                final_graph.nodes[unlabeled[0]]['final_label'] = int(predicted_labels.item())
+            elif len(unlabeled) > 0:
+                for i, node in enumerate(unlabeled):
+                    final_graph.nodes[node]['final_label'] = int(predicted_labels[i])
+            
+        print("Final labels assigned to all nodes.")
+        return final_graph
+    def fit_predict(self) -> nx.Graph:
+        """
+        Executes the full PU learning pipeline.
         
         Returns:
-            Modified graph with owner-cluster-based features
-        '''
-        # Get the nodes from positive clusters
-        label_clusters = defaultdict(list)
-        for node, cluster in list(self.graph.nodes(data='cluster_positive')):
-            label_clusters[cluster].append(node)
-        #import ipdb; ipdb.set_trace()
-        for node_negative in label_clusters[0]:
-            self.graph.nodes[node_negative]['dissimilarity'] = []
-            for node_positive in label_clusters[1]:
-                distance = nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
-                self.graph.nodes[node_negative]['dissimilarity'].append(distance)
-            self.graph.nodes[node_negative]['dissimilarity'] = max(self.graph.nodes[node_negative]['dissimilarity']) 
-       
-
-    def rank_nodes_dissimilarity(self, num_reg: int = 10):
-        '''
-        Rank nodes based on dissimilarity
-        '''
-        data = list(self.graph.nodes(data='dissimilarity'))
-        return sorted(data, key=lambda x: float('-inf') if x[1] is None else x[1], reverse=True)[:num_reg]
-
-
-
-
-
-
-
-
-def check_cluster_label(arr):
-    '''
-    Check if cluster is positive
-    '''
-    count_ones = np.count_nonzero(arr == 1)
-    count_zeros = np.count_nonzero(arr == 0)
-    return 1 if count_ones > count_zeros else 0
-
+            A NetworkX graph with a new 'final_label' attribute for every node.
+        """
+        # Step 1
+        graph_labeled_by_pcm = self._step1_label_initialization()
+        
+        # Step 2
+        graph_with_rn, reliable_negatives = self._step2_select_reliable_negatives(graph_labeled_by_pcm)
+        
+        # Step 3
+        final_labeled_graph = self._step3_classification(graph_with_rn, reliable_negatives)
+        
+        return final_labeled_graph
 
