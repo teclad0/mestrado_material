@@ -70,7 +70,7 @@ class ParticleCompetitionModel:
         average_node_potential_threshold: float = 0.7,
         coverage_graph_threshold: float = 0.8
     ):
-        self.graph = graph
+        self.graph = graph.copy()
         self.degrees = dict(graph.degree())
         self.neighbors_dict = {node: list(graph.neighbors(node)) for node in graph.nodes}
         self.neighbor_degrees = {}
@@ -246,7 +246,9 @@ class ParticleCompetitionModel:
         else:
             # Case 3: Node owned by another particle
             particle.potential = particle.potential - (particle.potential - 0.05) * self.delta_p
-            self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
+            new_potential = self.graph.nodes[node]['potential'] - self.delta_v
+            self.graph.nodes[node]['potential'] = max(0.05, new_potential)
+            #self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
             
             # Remove from particle's owned nodes if present
             if node in particle.visited_nodes:
@@ -334,15 +336,23 @@ class ParticleCompetitionModel:
         coverage = num_owned_nodes / total_nodes
         return num_owned_nodes, coverage
 
-    def run_simulation(self, max_iterations=2000) -> nx.Graph:
+    def run_simulation(self) -> nx.Graph:
         """Run the main simulation loop with clear stopping criteria."""
         total_nodes = self.graph.number_of_nodes()
-
-        for iteration_count in range(1, max_iterations + 1):
-            # --- Particle Movement and Update Phase ---
+        while True:
+            # --- Check Stopping Criteria at the start of the iteration ---
+            #if not self.has_unowned_nodes():
+            #    print("Stopping simulation: All nodes are owned.")
+            #    break
+            
+            if not self.check_average_node_potential()[1]:
+                print("Stopping simulation: Average node potential is above threshold.")
+                break
+            
+            # --- Main Simulation 
             for particle in self.particles:
                 node = self.move_particle(particle)
-                self.update_particle(particle, node)
+                self.update_particle(particle, node)  
 
             # --- Check Stopping Criteria at the end of the iteration ---
             # 1. Calculate current state metrics
@@ -356,70 +366,9 @@ class ParticleCompetitionModel:
 
             # --- DEBUGGING ---
             print(
-                f"\rIter {iteration_count}: "
                 f"Avg Potential: {avg_potential:.4f} (Goal: {self.average_node_potential_threshold}), "
-                f"Coverage: {coverage:.2%} (Goal: {self.coverage_graph_threshold:.0%}), "
-                f"Positive Cluster Found? {positive_cluster_found}",
-                end=""
-            )
-
-            # 3. Apply stopping logic
-            # The simulation can only stop IF a positive cluster has been found.
-            if positive_cluster_found and potential_threshold_met and coverage_threshold_met:
-                print("\n\nStopping criteria met: Positive cluster found, and potential and coverage thresholds reached.")
-                break
-        
-        # This message will be printed if the loop finishes due to max_iterations
-        else:
-            print(f"\n\nStopping simulation: Maximum iterations ({max_iterations}) reached.")
-
-        return self.graph
-
-   # def run_simulation(self, max_iterations = 200) -> Tuple[nx.Graph, List[Particle]]:
-        """Run the main simulation loop."""
-        iteration_count = 0
-        #max_iterations = 200 # Safety break to prevent accidental infinite loops
-
-        while True:
-            # Step 1: Evaluate each condition and store its state in a variable.
-            # This makes the logic clear and easy to debug.
-            
-            # Condition A: Continue if the average potential is still below the threshold.
-            potential_is_low = self.check_average_node_potential()[1]
-            
-            # Condition B: Continue if a stable positive cluster has NOT been found yet.
-            no_positive_cluster = not self.check_positive_cluster_existence()
-            
-            # Condition C: Continue if there are still nodes that don't have an owner.
-            #unowned_nodes_exist = self.has_unowned_nodes()
-            # --- DEBUGGING ---
-            # This print statement is now incredibly useful for seeing the state each iteration.
-            print(
-                f"Iter {iteration_count}: "
-                f"Potential Low? {potential_is_low}, "
-                f"Potential Avg: {self.check_average_node_potential()[0]}, "
-                f"No Positive Cluster? {no_positive_cluster}, "
-              #  f"Unowned Nodes? {unowned_nodes_exist}",
-                f"Num owned nodes: {sum([1 if n[1]['owner'] else 0 for n in self.graph.nodes(data=True)])}"
-            )
-
-            # Step 2: Check if the loop should stop.
-            # The loop stops ONLY when ALL THREE conditions are False.
-            # Therefore, it continues if AT LEAST ONE is True.
-         #   if not (potential_is_low or no_positive_cluster or unowned_nodes_exist):
-          #      print("All conditions met. Stopping simulation.")
-           #     break
-                
-            if iteration_count < max_iterations:
-                for particle in self.particles:
-                    node = self.move_particle(particle)
-                    self.update_particle(particle, node)
-                    
-
-                iteration_count += 1
-            else: 
-                break         
- 
+                f"Coverage: {num_owned_nodes} (Goal: {self.coverage_graph_threshold:.0%}), "
+                f"Positive Cluster Found? {positive_cluster_found}" )
 
         return self.graph
      
@@ -562,14 +511,13 @@ class DijkstraClustering:
 
 
 # Main Wrapper Class for the PU Learning Algorithm
-class PULearningPCC:
+class PULearningPC:
     def __init__(
         self,
         graph: nx.Graph,
-        feature_names: List[str],
+        #feature_names: List[str],
         num_neg: int = 20,
         dissimilarity_strategy: str = 'shortest_path',
-        initialization_method: str = 'particle_competition',
         # Pass-through parameters for ParticleCompetitionModel
         pcm_params: Dict[str, Any] = None,
         # Pass-through parameters for MCLS
@@ -579,10 +527,9 @@ class PULearningPCC:
         
     ):
         self.graph = graph.copy()
-        self.feature_names = feature_names
+        #self.feature_names = feature_names
         self.num_neg = num_neg
         self.dissimilarity_strategy = dissimilarity_strategy
-        self.initialization_method = initialization_method
         
         # Set default parameters if not provided
         self.pcm_params = pcm_params if pcm_params is not None else {}
@@ -590,20 +537,11 @@ class PULearningPCC:
         self.mlp_params = mlp_params if mlp_params is not None else {}
 
     def _step1_label_initialization(self) -> nx.Graph:
-        print(f"--- Step 1: Running Label Initialization using '{self.initialization_method}' method ---")
+        print(f"--- Step 1: Running Label Initialization ---")      
         
-        if self.initialization_method == 'particle_competition':
-            max_iterations = self.pcm_params.pop('max_iterations', 2000)
-            pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
-            return pcm.run_simulation(max_iterations=max_iterations)
-        
-        elif self.initialization_method == 'dijkstra':
-            dijkstra_clusterer = DijkstraClustering(self.graph)
-            return dijkstra_clusterer.run_simulation()
-            
-        else:
-            raise ValueError(f"Unknown initialization_method: '{self.initialization_method}'. "
-                             "Choose 'particle_competition' or 'dijkstra'.")
+        max_iterations = self.pcm_params.pop('max_iterations', 2000)
+        pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
+        return pcm.run_simulation(max_iterations=max_iterations)
 
     def _step2_select_reliable_negatives(self, labeled_graph: nx.Graph) -> Tuple[nx.Graph, List[Any]]:
         print("\n--- Step 2: Selecting Reliable Negatives using MCLS ---")
@@ -711,6 +649,7 @@ class PULearningPCC:
             
         print("Final labels assigned to all nodes.")
         return final_graph
+    
     def fit_predict(self) -> nx.Graph:
         """
         Executes the full PU learning pipeline.
@@ -725,7 +664,7 @@ class PULearningPCC:
         graph_with_rn, reliable_negatives = self._step2_select_reliable_negatives(graph_labeled_by_pcm)
         
         # Step 3
-        final_labeled_graph = self._step3_classification(graph_with_rn, reliable_negatives)
+        #final_labeled_graph = self._step3_classification(graph_with_rn, reliable_negatives)
         
-        return final_labeled_graph
+        return reliable_negatives
 
