@@ -440,13 +440,52 @@ class MCLS:
             owner = self.graph.nodes[node]['owner']
             if owner is not None:
                 owner_groups[owner].append(node)
+        
+        # First pass: try to assign labels using the standard strategy
+        positive_clusters = []
         for owner, nodes in owner_groups.items():
-            is_positive = is_cluster_positive(
-                self.graph, nodes, self.cluster_strategy, self.positive_cluster_threshold
-            )
-            cluster_value = 1 if is_positive else 0
-            for node in nodes:
-                self.graph.nodes[node]['cluster_positive'] = cluster_value
+            if len(nodes) >= 3:  # Only consider clusters with at least 3 nodes
+                is_positive = is_cluster_positive(
+                    self.graph, nodes, self.cluster_strategy, self.positive_cluster_threshold
+                )
+                cluster_value = 1 if is_positive else 0
+                for node in nodes:
+                    self.graph.nodes[node]['cluster_positive'] = cluster_value
+                
+                if is_positive:
+                    positive_clusters.append(owner)
+        
+        # If no positive clusters found, use the fallback rule
+        if not positive_clusters:
+            # Count total positive nodes in the graph
+            total_positives = sum(1 for node in self.graph.nodes 
+                                if self.graph.nodes[node].get('observed_label') == 1)
+            
+            # Find the cluster with the highest ratio of positive nodes
+            best_cluster = None
+            best_ratio = -1
+            
+            for owner, nodes in owner_groups.items():
+                if len(nodes) >= 3:  # Only consider clusters with at least 3 nodes
+                    pos_count = sum(1 for node in nodes 
+                                if self.graph.nodes[node].get('observed_label') == 1)
+                    ratio = pos_count / len(nodes)
+                    
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_cluster = owner
+            
+            # If we found a cluster, mark it as positive
+            if best_cluster is not None:
+                for node in owner_groups[best_cluster]:
+                    self.graph.nodes[node]['cluster_positive'] = 1
+                positive_clusters.append(best_cluster)
+                
+                # Mark all other clusters as negative
+                for owner, nodes in owner_groups.items():
+                    if owner != best_cluster:
+                        for node in nodes:
+                            self.graph.nodes[node]['cluster_positive'] = 0
 
     def calculate_dissimilarity(self):
         label_clusters = defaultdict(list)

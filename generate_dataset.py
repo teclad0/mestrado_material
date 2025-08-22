@@ -359,9 +359,9 @@ def load_mnist_scar(
     mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
     
     # Subsample the dataset for manageable graph sizes
-    indices = np.random.choice(len(mnist.data), num_samples, replace=False)
-    features = mnist.data[indices]
-    original_labels = mnist.target[indices].astype(int)
+    #indices = np.random.choice(len(mnist.data), num_samples, replace=False)
+    features = mnist.data
+    original_labels = mnist.target
 
     # Convert to binary: 0, 2, 4, 6, 8 are positives (1), others are negatives (0)
     positive_classes = [0, 2, 4, 6, 8]
