@@ -96,6 +96,19 @@ class ParticleCompetitionModel:
         # Initialize particles
         self.initialize_particles()
 
+        # Identify positive nodes (observed_label == 1)
+        self.positive_nodes = [
+        node for node in self.graph.nodes 
+        if self.graph.nodes[node].get('observed_label') == 1
+        ]
+        if self.initialization_strategy == 'random':
+            self._assigned_start_nodes = set()
+        else:
+            self._assigned_start_nodes = None
+
+        # Reserve first particle for positive node if any exist
+        self.reserved_positive_particle_id = 0 if self.positive_nodes else None
+
         if self.initialization_strategy == 'degree_weighted':
             # Create a candidate pool at least as large as the number of particles
             nodes_sorted_by_degree = sorted(
@@ -108,6 +121,14 @@ class ParticleCompetitionModel:
             self._candidate_start_nodes = nodes_sorted_by_degree[:pool_size]
             # Shuffle to randomize assignment among the top nodes
             random.shuffle(self._candidate_start_nodes)
+            
+            # For degree_weighted, also prepare positive nodes sorted by degree
+            if self.positive_nodes:
+                self._positive_nodes_by_degree = sorted(
+                    self.positive_nodes,
+                    key=lambda n: self.degrees[n],
+                    reverse=True
+                )
 
         # Run the simulation
         #self.graph_populated = self._run_simulation()
@@ -159,7 +180,15 @@ class ParticleCompetitionModel:
         Get a unique high-degree start node for the particle.
         Ensures each particle gets a different node from the pre-computed
         candidate pool, preventing collisions.
+        First particle is assigned to a positive node if available.
         """
+        # Check if this is the reserved particle for positive node
+        if (self.reserved_positive_particle_id is not None and 
+            particle.id == self.reserved_positive_particle_id and 
+            hasattr(self, '_positive_nodes_by_degree') and 
+            self._positive_nodes_by_degree):
+            return self._positive_nodes_by_degree[0]  # Return highest degree positive node
+        
         # The list is already created and shuffled in __init__
         # Use the modulo operator only as a safeguard in case num_particles > pool_size,
         # though ideally, the pool should be large enough.
@@ -180,13 +209,28 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         graph (Graph): graph
         '''
-    # Handle uninitialized particles
+        # Handle uninitialized particles
         if not particle.visited_nodes:
             if self.initialization_strategy == 'degree_weighted':
-                # Choose a distinct start node based on degree
                 return self._get_distinct_start_node(particle)
-            else:          
-                return random.choice(list(self.graph.nodes))
+            else:  # random strategy
+                # Check if this is the reserved particle for positive node
+                if (self.reserved_positive_particle_id is not None and 
+                    particle.id == self.reserved_positive_particle_id and 
+                    self.positive_nodes):
+                    node = random.choice(self.positive_nodes)
+                    self._assigned_start_nodes.add(node)
+                    return node
+                
+                # Get all unassigned nodes
+                available_nodes = list(set(self.graph.nodes) - self._assigned_start_nodes)
+                if available_nodes:
+                    node = random.choice(available_nodes)
+                    self._assigned_start_nodes.add(node)
+                    return node
+                else:
+                    # Fallback if no unique nodes left (shouldn't happen if num_particles <= num_nodes)
+                    return random.choice(list(self.graph.nodes))
         
         current_node = particle.current_position
         neighbors = self.neighbors_dict.get(current_node, []).copy()
@@ -410,7 +454,7 @@ class MCLS:
             cluster_label = data.get('cluster_positive')
             if cluster_label is not None:
                 label_clusters[cluster_label].append(node)
-        
+
         positive_nodes = label_clusters.get(1, [])
         if not positive_nodes:
             print("Warning: No positive clusters found. Cannot calculate dissimilarity.")
@@ -481,11 +525,11 @@ class PULearningPC:
     def train(self) -> nx.Graph:
         print(f"--- Step 1: Running Label Initialization ---")              
         pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
-        pcm.run_simulation()
+        self.labeled_graph = pcm.run_simulation()
 
-    def select_reliable_negatives(self, labeled_graph: nx.Graph) -> Tuple[nx.Graph, List[Any]]:
+    def select_reliable_negatives(self):
         print("\n--- Step 2: Selecting Reliable Negatives using MCLS ---")
-        mcls = MCLS(labeled_graph, dissimilarity_strategy=self.dissimilarity_strategy, **self.mcls_params)
+        mcls = MCLS(self.labeled_graph, dissimilarity_strategy=self.dissimilarity_strategy, **self.mcls_params)
         mcls.assign_cluster_label()
         mcls.calculate_dissimilarity()
         
@@ -494,5 +538,7 @@ class PULearningPC:
         
         print(f"Identified {len(reliable_negatives)} reliable negatives.")
         return reliable_negatives
+    
+
 
 
