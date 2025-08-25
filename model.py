@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+tqdm.pandas()
 
 def is_cluster_positive(
     graph: nx.Graph, 
@@ -85,6 +86,10 @@ class ParticleCompetitionModel:
         self.initialization_strategy = initialization_strategy
         self.average_node_potential_threshold = average_node_potential_threshold
         self.coverage_graph_threshold = coverage_graph_threshold
+        self.owner_groups = defaultdict(set)
+        self.cluster_sizes = defaultdict(int)
+        self.cluster_positive_counts = defaultdict(int)
+
 
         # Initialize graph nodes
         for node in self.graph.nodes:
@@ -198,6 +203,35 @@ class ParticleCompetitionModel:
         """Create particle instances"""
         self.particles = [Particle(i) for i in range(self.num_particles)]
 
+    def _update_cluster_state(self, node: Any, old_owner: Optional[int], new_owner: Optional[int]):
+        """
+        Incrementally updates cluster tracking data structures upon ownership change.
+        """
+        if old_owner == new_owner:
+            return  # No change, nothing to do
+
+        is_positive = self.graph.nodes[node].get('observed_label') == 1
+
+        # --- Update state for the old owner ---
+        if old_owner is not None:
+            self.owner_groups[old_owner].remove(node)
+            self.cluster_sizes[old_owner] -= 1
+            if is_positive:
+                self.cluster_positive_counts[old_owner] -= 1
+            
+            # Clean up if the cluster is now empty
+            if self.cluster_sizes[old_owner] == 0:
+                self.owner_groups.pop(old_owner, None)
+                self.cluster_sizes.pop(old_owner, None)
+                self.cluster_positive_counts.pop(old_owner, None)
+
+        # --- Update state for the new owner ---
+        if new_owner is not None:
+            self.owner_groups[new_owner].add(node)
+            self.cluster_sizes[new_owner] += 1
+            if is_positive:
+                self.cluster_positive_counts[new_owner] += 1
+
     def move_particle(self,
         particle: Particle, 
     ) -> Any:
@@ -281,6 +315,7 @@ class ParticleCompetitionModel:
             particle.visited_nodes.add(node)
             self.graph.nodes[node]['owner'] = particle.id
             self.graph.nodes[node]['potential'] = particle.potential
+            self._update_cluster_state(node, old_owner=current_owner, new_owner=particle.id)
             
         elif current_owner == particle.id:
             # Case 2: Node owned by current particle
@@ -302,12 +337,15 @@ class ParticleCompetitionModel:
             if particle.potential <= 0.05:
                 particle.potential = 0.05
                 if free_node := self.get_free_node():
+                    old_owner_of_free_node = self.graph.nodes[free_node]['owner']                
                     particle.visited_nodes.add(free_node)
-                    self.graph.nodes[free_node]['owner'] = particle.id
-
+                    self.graph.nodes[free_node]['owner'] = particle.id                
+                    self._update_cluster_state(free_node, old_owner=old_owner_of_free_node, new_owner=particle.id)
+        
             # Free node if potential too low
             if self.graph.nodes[node]['potential'] <= 0.05:
                 self.graph.nodes[node]['owner'] = None
+                self._update_cluster_state(node, old_owner=current_owner, new_owner=None)
 
     def get_free_node(self) -> Optional[Any]:
         return next(
@@ -425,71 +463,83 @@ class MCLS:
     def __init__(
         self, 
         G: nx.Graph,
+        owner_groups: Dict[int, Any],  # Pass the state
+        cluster_sizes: Dict[int, int],     # Pass the state
+        cluster_positive_counts: Dict[int, int], # Pass the state
         cluster_strategy: str = 'majority',
         positive_cluster_threshold: float = 0.5,
-        dissimilarity_strategy: str = 'shortest_path'
+        dissimilarity_strategy: str = 'shortest_path', 
+
     ):
         self.graph = G.copy()
         self.cluster_strategy = cluster_strategy
         self.positive_cluster_threshold = positive_cluster_threshold
         self.dissimilarity_strategy = dissimilarity_strategy
+        self.owner_groups = owner_groups
+        self.cluster_sizes = cluster_sizes
+        self.cluster_positive_counts = cluster_positive_counts
 
     def assign_cluster_label(self):
-        owner_groups = defaultdict(list)
-        for node in self.graph.nodes:
-            owner = self.graph.nodes[node]['owner']
-            if owner is not None:
-                owner_groups[owner].append(node)
+        # The expensive step of grouping nodes is now GONE.
         
-        # First pass: try to assign labels using the standard strategy
         positive_clusters = []
-        for owner, nodes in owner_groups.items():
-            if len(nodes) >= 3:  # Only consider clusters with at least 3 nodes
-                is_positive = is_cluster_positive(
-                    self.graph, nodes, self.cluster_strategy, self.positive_cluster_threshold
-                )
-                cluster_value = 1 if is_positive else 0
-                for node in nodes:
-                    self.graph.nodes[node]['cluster_positive'] = cluster_value
-                
-                if is_positive:
-                    positive_clusters.append(owner)
-        
-        # If no positive clusters found, use the fallback rule
-        if not positive_clusters:
-            # Count total positive nodes in the graph
-            total_positives = sum(1 for node in self.graph.nodes 
-                                if self.graph.nodes[node].get('observed_label') == 1)
+        # Iterate over clusters (particles), not nodes. This is much faster.
+        for owner, nodes in tqdm(self.owner_groups.items(), desc="Assigning cluster labels"):
+            cluster_size = self.cluster_sizes.get(owner, 0)
+            if cluster_size < 3:
+                continue
+
+            # Use pre-computed counts for efficiency
+            positive_count = self.cluster_positive_counts.get(owner, 0)
             
-            # Find the cluster with the highest ratio of positive nodes
-            best_cluster = None
+            is_positive = False
+            if self.cluster_strategy == 'majority':
+                # Majority check is now a simple comparison
+                if positive_count > (cluster_size / 2):
+                    is_positive = True
+            elif self.cluster_strategy == 'percentage':
+                # Percentage check is a simple division
+                if (positive_count / cluster_size) >= self.positive_cluster_threshold:
+                    is_positive = True
+
+            cluster_value = 1 if is_positive else 0
+            for node in nodes:
+                self.graph.nodes[node]['cluster_positive'] = cluster_value
+            
+            if is_positive:
+                positive_clusters.append(owner)
+        
+        # --- Fallback Rule (Now much faster) ---
+        if not positive_clusters:
+            best_cluster_owner = None
             best_ratio = -1
             
-            for owner, nodes in owner_groups.items():
-                if len(nodes) >= 3:  # Only consider clusters with at least 3 nodes
-                    pos_count = sum(1 for node in nodes 
-                                if self.graph.nodes[node].get('observed_label') == 1)
-                    ratio = pos_count / len(nodes)
-                    
-                    if ratio > best_ratio:
-                        best_ratio = ratio
-                        best_cluster = owner
-            
-            # If we found a cluster, mark it as positive
-            if best_cluster is not None:
-                for node in owner_groups[best_cluster]:
-                    self.graph.nodes[node]['cluster_positive'] = 1
-                positive_clusters.append(best_cluster)
+            # This loop is now O(num_clusters), not O(num_nodes)
+            for owner in tqdm(self.owner_groups.keys(), desc="Finding best cluster by ratio"):
+                cluster_size = self.cluster_sizes.get(owner, 0)
+                if cluster_size < 3:
+                    continue
                 
+                positive_count = self.cluster_positive_counts.get(owner, 0)
+                ratio = positive_count / cluster_size
+                
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_cluster_owner = owner
+
+            if best_cluster_owner is not None:
+                # Mark best cluster as positive
+                for node in self.owner_groups[best_cluster_owner]:
+                    self.graph.nodes[node]['cluster_positive'] = 1
                 # Mark all other clusters as negative
-                for owner, nodes in owner_groups.items():
-                    if owner != best_cluster:
+                for owner, nodes in self.owner_groups.items():
+                    if owner != best_cluster_owner:
                         for node in nodes:
                             self.graph.nodes[node]['cluster_positive'] = 0
 
     def calculate_dissimilarity(self):
         label_clusters = defaultdict(list)
-        for node, data in self.graph.nodes(data=True):
+        for node, data in tqdm(self.graph.nodes(data=True), desc="Grouping nodes by cluster label", total=self.graph.number_of_nodes()):
             cluster_label = data.get('cluster_positive')
             if cluster_label is not None:
                 label_clusters[cluster_label].append(node)
@@ -498,32 +548,50 @@ class MCLS:
         if not positive_nodes:
             print("Warning: No positive clusters found. Cannot calculate dissimilarity.")
             return
+        if self.dissimilarity_strategy == 'shortest_path':
+            # --- Store distances from each positive node ---
+            positive_node_distances = {}
+            for p_node in tqdm(positive_nodes, desc="Running SSSP from positive nodes", total=len(positive_nodes)):
+                # This gives {node: distance_from_p_node, ...}
+                positive_node_distances[p_node] = nx.single_source_shortest_path_length(self.graph, p_node)
 
-        for node_negative in label_clusters.get(0, []):
-            if self.dissimilarity_strategy == 'shortest_path':
-                distances = [
-                    nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
-                    for node_positive in positive_nodes
-                ]
+            # --- Calculate mean dissimilarity for each negative node ---
+            for n_node in tqdm(label_clusters.get(0, []), desc="Calculating mean dissimilarity", total=len(label_clusters.get(0, []))):
+                distances = []
+                for p_node in positive_nodes:
+                    # Look up the pre-computed distance
+                    dist = positive_node_distances[p_node].get(n_node, float('inf'))
+                    if dist != float('inf'):
+                        distances.append(dist)
+                
                 if distances:
-                    # The dissimilarity is the distance to the *closest* positive node
-                    self.graph.nodes[node_negative]['dissimilarity'] = np.mean(distances)
-            elif self.dissimilarity_strategy == 'jaccard':
-                # Jaccard similarity is |N(u) intersect N(v)| / |N(u) union N(v)|
-                # Dissimilarity is 1 - similarity. We average it over all positive nodes.
-                neg_neighbors = set(self.graph.neighbors(node_negative))
-                dissimilarities = []
-                for node_positive in positive_nodes:
-                    pos_neighbors = set(self.graph.neighbors(node_positive))
-                    intersection_len = len(neg_neighbors.intersection(pos_neighbors))
-                    union_len = len(neg_neighbors.union(pos_neighbors))
-                    if union_len == 0:
-                        jaccard_sim = 0
-                    else:
-                        jaccard_sim = intersection_len / union_len
-                    dissimilarities.append(1 - jaccard_sim)
-                if dissimilarities:
-                    self.graph.nodes[node_negative]['dissimilarity'] = np.mean(dissimilarities)
+                    self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
+
+        # for node_negative in label_clusters.get(0, []):
+        #     if self.dissimilarity_strategy == 'shortest_path':
+        #         distances = [
+        #             nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
+        #             for node_positive in positive_nodes
+        #         ]
+        #         if distances:
+        #             # The dissimilarity is the distance to the *closest* positive node
+        #             self.graph.nodes[node_negative]['dissimilarity'] = np.mean(distances)
+        #     elif self.dissimilarity_strategy == 'jaccard':
+        #         # Jaccard similarity is |N(u) intersect N(v)| / |N(u) union N(v)|
+        #         # Dissimilarity is 1 - similarity. We average it over all positive nodes.
+        #         neg_neighbors = set(self.graph.neighbors(node_negative))
+        #         dissimilarities = []
+        #         for node_positive in positive_nodes:
+        #             pos_neighbors = set(self.graph.neighbors(node_positive))
+        #             intersection_len = len(neg_neighbors.intersection(pos_neighbors))
+        #             union_len = len(neg_neighbors.union(pos_neighbors))
+        #             if union_len == 0:
+        #                 jaccard_sim = 0
+        #             else:
+        #                 jaccard_sim = intersection_len / union_len
+        #             dissimilarities.append(1 - jaccard_sim)
+        #         if dissimilarities:
+        #             self.graph.nodes[node_negative]['dissimilarity'] = np.mean(dissimilarities)
 
     def rank_nodes_dissimilarity(self, num_neg: int = 10):
         # Filter for nodes in negative clusters that have a dissimilarity score
@@ -563,12 +631,19 @@ class PULearningPC:
 
     def train(self) -> nx.Graph:
         print(f"--- Step 1: Running Label Initialization ---")              
-        pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
-        self.labeled_graph = pcm.run_simulation()
+        self.pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
+        self.labeled_graph = self.pcm.run_simulation()
 
     def select_reliable_negatives(self):
         print("\n--- Step 2: Selecting Reliable Negatives using MCLS ---")
-        mcls = MCLS(self.labeled_graph, dissimilarity_strategy=self.dissimilarity_strategy, **self.mcls_params)
+        mcls = MCLS(
+            self.labeled_graph,
+            owner_groups=self.pcm.owner_groups,
+            cluster_sizes=self.pcm.cluster_sizes,
+            cluster_positive_counts=self.pcm.cluster_positive_counts,
+            dissimilarity_strategy=self.dissimilarity_strategy,
+            **self.mcls_params
+        )
         mcls.assign_cluster_label()
         mcls.calculate_dissimilarity()
         

@@ -348,7 +348,6 @@ def load_citeseer_scar(
 def load_mnist_scar(
     percent_positive: float,
     k: int = 10,
-    num_samples: int = 5000
 ) -> nx.Graph:
     """
     Loads the MNIST dataset, converts to binary (even vs. odd),
@@ -361,10 +360,11 @@ def load_mnist_scar(
     # Subsample the dataset for manageable graph sizes
     #indices = np.random.choice(len(mnist.data), num_samples, replace=False)
     features = mnist.data
-    original_labels = mnist.target
+    original_labels = mnist.target.astype(int)
 
     # Convert to binary: 0, 2, 4, 6, 8 are positives (1), others are negatives (0)
     positive_classes = [0, 2, 4, 6, 8]
+    #import ipdb; ipdb.set_trace()
     true_labels_binary = np.isin(original_labels, positive_classes).astype(int)
 
     # Normalize features
@@ -387,7 +387,7 @@ def load_mnist_scar(
             'true_label': true_labels_binary[i],
             'observed_label': observed_labels[i]
         }
-        for i in range(num_samples)
+        for i in range(G.number_of_nodes())
     }
     nx.set_node_attributes(G, node_attributes)
 
