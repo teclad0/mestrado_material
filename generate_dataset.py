@@ -413,7 +413,7 @@ def load_ionosphere_scar(
     le = LabelEncoder()
     true_labels = le.fit_transform(labels_str)
     positive_class_label = le.transform(['g'])[0]
-    
+    import ipdb; ipdb.set_trace()
     # Binarize true labels (already binary, but keeping for consistency)
     true_labels_binary = binarize_labels(true_labels, positive_class_label)
     

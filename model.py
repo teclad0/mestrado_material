@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
+from collections import deque
 tqdm.pandas()
 
 def is_cluster_positive(
@@ -69,7 +70,8 @@ class ParticleCompetitionModel:
         movement_strategy: str = 'uniform' ,
         initialization_strategy: str = 'random',
         average_node_potential_threshold: float = 0.7,
-        coverage_graph_threshold: float = 0.8
+        coverage_graph_threshold: float = 0.8,
+        patience: int = 50
     ):
         self.graph = graph.copy()
         self.degrees = dict(graph.degree())
@@ -89,6 +91,9 @@ class ParticleCompetitionModel:
         self.owner_groups = defaultdict(set)
         self.cluster_sizes = defaultdict(int)
         self.cluster_positive_counts = defaultdict(int)
+        self.patience = patience
+        self._stall_tolerance = 0.0001  # Internal constant for sensitivity
+        self._potential_history = deque(maxlen=patience) # Tracks recent potential values
 
 
         # Initialize graph nodes
@@ -420,36 +425,37 @@ class ParticleCompetitionModel:
 
     def run_simulation(self) -> nx.Graph:
         """Run the main simulation loop with clear stopping criteria."""
+        iteration = 0
         while True:
-            # --- Check Stopping Criteria at the start of the iteration ---
-            #if not self.has_unowned_nodes():
-            #    print("Stopping simulation: All nodes are owned.")
-            #    break
-            
-            if not self.check_average_node_potential(threshold=self.average_node_potential_threshold)[1]:
-                print("Stopping simulation: Average node potential is above threshold.")
-                break
-            
-            # --- Main Simulation 
+            iteration += 1
+
+            # --- Main Simulation Step ---
             for particle in self.particles:
                 node = self.move_particle(particle)
                 self.update_particle(particle, node)  
 
-            # --- Check Stopping Criteria at the end of the iteration ---
-            # 1. Calculate current state metrics
+            # --- Calculate current state metrics ---
             avg_potential = self.get_average_node_potential()
-            num_owned_nodes, coverage = self.get_graph_coverage()
-            positive_cluster_found = self.check_positive_cluster_existence()
+            self._potential_history.append(avg_potential)
+            
+            print(f"Iteration: {iteration} | Avg Potential: {avg_potential:.4f} | Coverage: {self.get_graph_coverage()[1]:.4f}")
 
-            # 2. Check if thresholds are met
-            potential_threshold_met = avg_potential >= self.average_node_potential_threshold
-            coverage_threshold_met = coverage >= self.coverage_graph_threshold
+            # --- Stopping Criterion 1: Target Potential Reached ---
+            if avg_potential >= self.average_node_potential_threshold:
+                print("Stopping simulation: Average node potential reached the threshold.")
+                break
 
-            # --- DEBUGGING ---
-            print(
-                f"Avg Potential: {avg_potential:.4f} (Goal: {self.average_node_potential_threshold}), "
-                f"Coverage: {coverage:.02%} (Goal: {self.coverage_graph_threshold:.0%}), "
-                f"Positive Cluster Found? {positive_cluster_found}" )
+            # --- Stopping Criterion 2: Potential Has Converged ---
+            # This check runs only after the history deque is full
+            if len(self._potential_history) == self.patience:
+                potential_change = np.std(self._potential_history)
+                print(f"Potential change over last {self.patience} iterations: {potential_change:.6f}")
+                if potential_change < self._stall_tolerance:
+                    print(
+                        f"Stopping simulation: Potential has converged. Change is below tolerance "
+                        f"over the last {self.patience} iterations."
+                    )
+                    break
 
         return self.graph
      
