@@ -65,12 +65,9 @@ class ParticleCompetitionModel:
         p_det: float = 0.6,
         delta_p: float = 0.4,
         delta_v: float = 0.3,
-        cluster_strategy: str = 'majority',
-        positive_cluster_threshold: float = 0.5, 
         movement_strategy: str = 'uniform' ,
         initialization_strategy: str = 'random',
         average_node_potential_threshold: float = 0.7,
-        coverage_graph_threshold: float = 0.8,
         patience: int = 50
     ):
         self.graph = graph.copy()
@@ -82,12 +79,9 @@ class ParticleCompetitionModel:
         self.delta_p = delta_p
         self.delta_v = delta_v
         self.particles: List[Particle] = []        
-        self.cluster_strategy = cluster_strategy
-        self.positive_cluster_threshold = positive_cluster_threshold
         self.movement_strategy = movement_strategy
         self.initialization_strategy = initialization_strategy
         self.average_node_potential_threshold = average_node_potential_threshold
-        self.coverage_graph_threshold = coverage_graph_threshold
         self.owner_groups = defaultdict(set)
         self.cluster_sizes = defaultdict(int)
         self.cluster_positive_counts = defaultdict(int)
@@ -464,8 +458,8 @@ class ParticleCompetitionModel:
         nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
 
-# Step 2: MCLS for Reliable Negative Selection 
-class MCLS:
+# Step 2: rns for Reliable Negative Selection 
+class ReliableNegativeSelection:
     def __init__(
         self, 
         G: nx.Graph,
@@ -573,32 +567,6 @@ class MCLS:
                 if distances:
                     self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
 
-        # for node_negative in label_clusters.get(0, []):
-        #     if self.dissimilarity_strategy == 'shortest_path':
-        #         distances = [
-        #             nx.shortest_path_length(self.graph, source=node_negative, target=node_positive)
-        #             for node_positive in positive_nodes
-        #         ]
-        #         if distances:
-        #             # The dissimilarity is the distance to the *closest* positive node
-        #             self.graph.nodes[node_negative]['dissimilarity'] = np.mean(distances)
-        #     elif self.dissimilarity_strategy == 'jaccard':
-        #         # Jaccard similarity is |N(u) intersect N(v)| / |N(u) union N(v)|
-        #         # Dissimilarity is 1 - similarity. We average it over all positive nodes.
-        #         neg_neighbors = set(self.graph.neighbors(node_negative))
-        #         dissimilarities = []
-        #         for node_positive in positive_nodes:
-        #             pos_neighbors = set(self.graph.neighbors(node_positive))
-        #             intersection_len = len(neg_neighbors.intersection(pos_neighbors))
-        #             union_len = len(neg_neighbors.union(pos_neighbors))
-        #             if union_len == 0:
-        #                 jaccard_sim = 0
-        #             else:
-        #                 jaccard_sim = intersection_len / union_len
-        #             dissimilarities.append(1 - jaccard_sim)
-        #         if dissimilarities:
-        #             self.graph.nodes[node_negative]['dissimilarity'] = np.mean(dissimilarities)
-
     def rank_nodes_dissimilarity(self, num_neg: int = 10):
         # Filter for nodes in negative clusters that have a dissimilarity score
         data = [
@@ -619,8 +587,8 @@ class PULearningPC:
         dissimilarity_strategy: str = 'shortest_path',
         # Pass-through parameters for ParticleCompetitionModel
         pcm_params: Dict[str, Any] = None,
-        # Pass-through parameters for MCLS
-        mcls_params: Dict[str, Any] = None,
+        # Pass-through parameters for RNS
+        rns_params: Dict[str, Any] = None,
         # Parameters for the MLP classifier
         mlp_params: Dict[str, Any] = None
         
@@ -632,7 +600,7 @@ class PULearningPC:
         
         # Set default parameters if not provided
         self.pcm_params = pcm_params if pcm_params is not None else {}
-        self.mcls_params = mcls_params if mcls_params is not None else {}
+        self.rns_params = rns_params if rns_params is not None else {}
         self.mlp_params = mlp_params if mlp_params is not None else {}
 
     def train(self) -> nx.Graph:
@@ -641,19 +609,19 @@ class PULearningPC:
         self.labeled_graph = self.pcm.run_simulation()
 
     def select_reliable_negatives(self):
-        print("\n--- Step 2: Selecting Reliable Negatives using MCLS ---")
-        mcls = MCLS(
+        print("\n--- Step 2: Selecting Reliable Negatives using rns ---")
+        rns = ReliableNegativeSelection(
             self.labeled_graph,
             owner_groups=self.pcm.owner_groups,
             cluster_sizes=self.pcm.cluster_sizes,
             cluster_positive_counts=self.pcm.cluster_positive_counts,
             dissimilarity_strategy=self.dissimilarity_strategy,
-            **self.mcls_params
+            **self.rns_params
         )
-        mcls.assign_cluster_label()
-        mcls.calculate_dissimilarity()
+        rns.assign_cluster_label()
+        rns.calculate_dissimilarity()
         
-        ranked_nodes = mcls.rank_nodes_dissimilarity(num_neg=self.num_neg)
+        ranked_nodes = rns.rank_nodes_dissimilarity(num_neg=self.num_neg)
         reliable_negatives = [node for node, _ in ranked_nodes]
         
         print(f"Identified {len(reliable_negatives)} reliable negatives.")
