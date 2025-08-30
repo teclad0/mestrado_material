@@ -1,0 +1,469 @@
+import networkx as nx
+import pandas as pd
+import numpy as np
+import random
+import json
+import os
+from typing import Dict, List, Any, Tuple
+from itertools import product
+from sklearn.metrics import f1_score, precision_score, recall_score
+from tqdm import tqdm
+import warnings
+warnings.filterwarnings('ignore')
+
+from model import PULearningPC
+from generate_dataset import (
+    load_cora_scar, load_citeseer_scar, load_twitch_scar, 
+    load_mnist_scar, load_ionosphere_scar
+)
+
+class PULearningExperimentRunner:
+    """
+    Comprehensive parametric experiment runner for PULearningPC algorithm.
+    Tests multiple parameter combinations with multiple runs per combination.
+    """
+    
+    def __init__(self, 
+                 n_runs: int = 5,
+                 output_dir: str = "experiment_results",
+                 random_seed: int = 42):
+        """
+        Initialize the experiment runner.
+        
+        Args:
+            n_runs: Number of runs per parameter combination
+            output_dir: Directory to save results
+            random_seed: Random seed for reproducibility
+        """
+        self.n_runs = n_runs
+        self.output_dir = output_dir
+        self.random_seed = random_seed
+        
+        # Create output directory
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Set random seeds
+        random.seed(random_seed)
+        np.random.seed(random_seed)
+        
+        # Initialize results storage
+        self.results = []
+        
+    def get_parameter_grid(self) -> List[Dict[str, Any]]:
+        """
+        Define the parameter grid for experiments.
+        Returns a list of parameter dictionaries to test.
+        """
+        # Define parameter ranges
+        param_ranges = {
+            'num_particles': [50, 100, 200, 387, 500],
+            'p_det': [0.6],  # Fixed at 0.6 as requested
+            'delta_v': [0.1, 0.2, 0.3, 0.4, 0.5],
+            'delta_p': [0.3, 0.5, 0.7, 0.8, 0.9],
+            'cluster_strategy': ['majority', 'percentage'],
+            'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
+            'movement_strategy': ['uniform', 'degree_weighted'],
+            'initialization_strategy': ['random', 'degree_weighted'],
+            'avg_node_pot_threshold': [0.7, 0.8, 0.9]
+        }
+        
+        # Generate all combinations
+        param_names = list(param_ranges.keys())
+        param_values = list(param_ranges.values())
+        
+        combinations = []
+        for values in product(*param_values):
+            param_dict = dict(zip(param_names, values))
+            combinations.append(param_dict)
+            
+        return combinations
+    
+    def load_dataset(self, dataset_name: str, **kwargs) -> nx.Graph:
+        """
+        Load a specific dataset with default parameters.
+        
+        Args:
+            dataset_name: Name of the dataset to load
+            **kwargs: Additional parameters for dataset loading
+            
+        Returns:
+            NetworkX graph
+        """
+        # Default parameters for each dataset
+        default_params = {
+            'cora': {
+                'k': 3,
+                'positive_class_label': 3,
+                'percent_positive': 0.1,
+                'use_original_edges': True,
+                'mst': False
+            },
+            'citeseer': {
+                'positive_class_label': 2,
+                'percent_positive': 0.1,
+                'use_original_edges': True,
+                'mst': False
+            },
+            'twitch': {
+                'percent_positive': 0.1,
+                'mst': False
+            },
+            'mnist': {
+                'k': 3,
+                'percent_positive': 0.1
+            },
+            'ionosphere': {
+                'percent_positive': 0.1,
+                'k': 3
+            }
+        }
+        
+        # Update with provided kwargs
+        params = default_params.get(dataset_name, {}).copy()
+        params.update(kwargs)
+        
+        # Load dataset
+        if dataset_name == 'cora':
+            return load_cora_scar(**params)
+        elif dataset_name == 'citeseer':
+            return load_citeseer_scar(**params)
+        elif dataset_name == 'twitch':
+            return load_twitch_scar(**params)
+        elif dataset_name == 'mnist':
+            return load_mnist_scar(**params)
+        elif dataset_name == 'ionosphere':
+            return load_ionosphere_scar(**params)
+        else:
+            raise ValueError(f"Unknown dataset: {dataset_name}")
+    
+
+    
+    def evaluate_reliable_negatives(self, 
+                                  graph: nx.Graph, 
+                                  reliable_negatives: List[Any]) -> Dict[str, float]:
+        """
+        Evaluate the quality of reliable negative selection.
+        Following the exact same approach as in resultados.ipynb:
+        - y_true_f1 = [graph.nodes[n]['true_label'] for n in reliable_negatives]
+        - y_pred = [0] * len(reliable_negatives)
+        - f1_score(y_true_f1, y_pred, pos_label=0)
+        
+        Args:
+            graph: NetworkX graph
+            reliable_negatives: List of nodes identified as reliable negatives
+            ground_truth_labels: Ground truth labels for evaluation
+            
+        Returns:
+            Dictionary with evaluation metrics
+        """
+        if not reliable_negatives:
+            return {
+                'f1_score': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'num_reliable_negatives': 0
+            }
+        # Check if graph has true_label attribute - use safer node access
+        if not any('true_label' in graph.nodes[node] for node in graph.nodes()):
+            print("Warning: Graph does not have 'true_label' attribute. Cannot calculate accurate metrics.")
+            return {
+                'f1_score': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'num_reliable_negatives': len(reliable_negatives)
+            }
+        
+        # Follow exactly the same approach as in resultados.ipynb
+        try:
+            # Use safer node access since graph nodes may have gaps after processing
+            # Get all node attributes as a dictionary for safe access
+            node_attributes = dict(graph.nodes(data=True))
+            
+            # y_true_f1 = [graph.nodes[n]['true_label'] for n in reliable_negatives]
+            y_true_f1 = [node_attributes[n]['true_label'] for n in reliable_negatives if n in node_attributes]
+            
+            # y_pred = [0] * len(reliable_negatives)  # All predicted as reliable negatives
+            y_pred = [0] * len(y_true_f1)  # Adjust length based on valid nodes
+            
+            # Calculate F1 score with pos_label=0 (treating reliable negatives as positive class)
+            f1 = f1_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
+            precision = precision_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
+            recall = recall_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
+            
+        except Exception as e:
+            print(f"Warning: Error calculating metrics: {e}")
+            f1, precision, recall = 0.0, 0.0, 0.0
+        
+        return {
+            'f1_score': f1,
+            'precision': precision,
+            'recall': recall,
+            'num_reliable_negatives': len(reliable_negatives)
+        }
+    
+    def run_single_experiment(self, 
+                             graph: nx.Graph,
+                             params: Dict[str, Any],
+                             run_id: int) -> Dict[str, Any]:
+        """
+        Run a single experiment with given parameters.
+        
+        Args:
+            graph: NetworkX graph to use
+            params: Parameter dictionary
+            run_id: ID of this run
+            
+        Returns:
+            Dictionary with experiment results
+        """
+        try:
+            # Check if graph has true_label attribute for evaluation
+            # Use safe node access since graph nodes may have gaps after processing
+            node_attributes = dict(graph.nodes(data=True))
+            has_true_labels = any('true_label' in node_attributes[node] for node in graph.nodes())
+            if not has_true_labels:
+                print(f"Warning: Graph does not have 'true_label' attribute. Evaluation may not be accurate.")
+            
+            # Extract parameters
+            pcm_params = {
+                'num_particles': params['num_particles'],
+                'p_det': params['p_det'],
+                'delta_v': params['delta_v'],
+                'delta_p': params['delta_p'],
+                'movement_strategy': params['movement_strategy'],
+                'initialization_strategy': params['initialization_strategy'],
+                'average_node_potential_threshold': params['avg_node_pot_threshold']
+            }
+            
+            rns_params = {
+                'cluster_strategy': params['cluster_strategy'],
+                'positive_cluster_threshold': params['positive_cluster_threshold']
+            }
+            
+            # Initialize and train model
+            model = PULearningPC(
+                graph=graph,
+                num_neg=200,  # Fixed number of reliable negatives
+                pcm_params=pcm_params,
+                rns_params=rns_params
+            )
+            
+            # Train the model
+            model.train()
+            
+            # Select reliable negatives
+            reliable_negatives = model.select_reliable_negatives()
+            
+            # Check if we got enough reliable negatives
+            if not reliable_negatives:
+                print(f"Warning: No reliable negatives found for run {run_id}. Marking as error.")
+                # Return error result for insufficient reliable negatives
+                result = {
+                    'run_id': run_id,
+                    'num_particles': params['num_particles'],
+                    'p_det': params['p_det'],
+                    'delta_v': params['delta_v'],
+                    'delta_p': params['delta_p'],
+                    'cluster_strategy': params['cluster_strategy'],
+                    'positive_cluster_threshold': params['positive_cluster_threshold'],
+                    'movement_strategy': params['movement_strategy'],
+                    'initialization_strategy': params['initialization_strategy'],
+                    'avg_node_pot_threshold': params['avg_node_pot_threshold'],
+                    'f1_score': 0.0,
+                    'precision': 0.0,
+                    'recall': 0.0,
+                    'num_reliable_negatives': 0,
+                    'coverage': model.pcm.get_graph_coverage()[1],
+                    'fallback_rule_used': model.labeled_graph.graph.get('fallback_rule_used', False),
+                    'avg_threshold_criteria': model.labeled_graph.graph.get('avg_threshold_criteria', False),
+                    'graph_nodes': graph.number_of_nodes(),
+                    'graph_edges': graph.number_of_edges(),
+                    'has_true_labels': has_true_labels,
+                    'status': 'error: insufficient reliable negatives'
+                }
+                return result
+            
+            # Evaluate results
+            metrics = self.evaluate_reliable_negatives(
+                graph, reliable_negatives
+            )
+            
+            # Get final coverage from the model
+            final_coverage = model.pcm.get_graph_coverage()[1]
+            
+            # Check if fallback rule was used - look in the labeled_graph where it's stored
+            fallback_rule_used = model.labeled_graph.graph.get('fallback_rule_used', False)
+            
+            # Check if simulation stopped due to threshold or convergence
+            avg_threshold_criteria = model.labeled_graph.graph.get('avg_threshold_criteria', False)
+            
+            # Compile results
+            result = {
+                'run_id': run_id,
+                'num_particles': params['num_particles'],
+                'p_det': params['p_det'],
+                'delta_v': params['delta_v'],
+                'delta_p': params['delta_p'],
+                'cluster_strategy': params['cluster_strategy'],
+                'positive_cluster_threshold': params['positive_cluster_threshold'],
+                'movement_strategy': params['movement_strategy'],
+                'initialization_strategy': params['initialization_strategy'],
+                'avg_node_pot_threshold': params['avg_node_pot_threshold'],
+                'f1_score': metrics['f1_score'],
+                'precision': metrics['precision'],
+                'recall': metrics['recall'],
+                'num_reliable_negatives': metrics['num_reliable_negatives'],
+                'coverage': final_coverage,
+                'fallback_rule_used': fallback_rule_used,
+                'avg_threshold_criteria': avg_threshold_criteria,
+                'graph_nodes': graph.number_of_nodes(),
+                'graph_edges': graph.number_of_edges(),
+                'has_true_labels': has_true_labels,
+                'status': 'success'
+            }
+            
+            return result
+            
+        except Exception as e:
+            # Return error result
+            result = {
+                'run_id': run_id,
+                'num_particles': params.get('num_particles', -1),
+                'p_det': params.get('p_det', -1),
+                'delta_v': params.get('delta_v', -1),
+                'delta_p': params.get('delta_p', -1),
+                'cluster_strategy': params.get('cluster_strategy', 'error'),
+                'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
+                'movement_strategy': params.get('movement_strategy', 'error'),
+                'initialization_strategy': params.get('initialization_strategy', 'error'),
+                'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
+                'f1_score': 0.0,
+                'precision': 0.0,
+                'recall': 0.0,
+                'num_reliable_negatives': 0,
+                'coverage': 0.0,
+                'fallback_rule_used': False,
+                'avg_threshold_criteria': False,
+                'graph_nodes': graph.number_of_nodes() if graph else 0,
+                'graph_edges': graph.number_of_edges() if graph else 0,
+                'has_true_labels': False,
+                'status': f'error: {str(e)}'
+            }
+            return result
+    
+    def run_experiments(self, 
+                       dataset_name: str,
+                       dataset_kwargs: Dict[str, Any] = None) -> pd.DataFrame:
+        """
+        Run all experiments for a given dataset.
+        
+        Args:
+            dataset_name: Name of the dataset to use
+            dataset_kwargs: Additional parameters for dataset loading
+            
+        Returns:
+            DataFrame with all experiment results
+        """
+        print(f"Starting experiments on {dataset_name} dataset...")
+        
+        # Load dataset
+        graph = self.load_dataset(dataset_name, **(dataset_kwargs or {}))
+        print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+        
+        # Get parameter combinations
+        param_combinations = self.get_parameter_grid()
+        total_experiments = len(param_combinations) * self.n_runs
+        
+        print(f"Running {total_experiments} experiments ({len(param_combinations)} parameter combinations × {self.n_runs} runs each)")
+        
+        # Run experiments
+        results = []
+        for i, params in enumerate(tqdm(param_combinations, desc="Parameter combinations")):
+            for run_id in range(self.n_runs):
+                result = self.run_single_experiment(graph, params, run_id)
+                results.append(result)
+                
+                # Save intermediate results every 10 experiments
+                if len(results) % 10 == 0:
+                    self.save_intermediate_results(results, dataset_name)
+        
+        # Convert to DataFrame
+        df = pd.DataFrame(results)
+        
+        # Save final results
+        self.save_final_results(df, dataset_name)
+        
+        return df
+    
+    def save_intermediate_results(self, results: List[Dict], dataset_name: str):
+        """Save intermediate results to avoid losing progress."""
+        df = pd.DataFrame(results)
+        filename = f"{self.output_dir}/{dataset_name}_intermediate_results.csv"
+        df.to_csv(filename, index=False)
+    
+    def save_final_results(self, df: pd.DataFrame, dataset_name: str):
+        """Save final results to CSV."""
+        filename = f"{self.output_dir}/{dataset_name}_final_results.csv"
+        df.to_csv(filename, index=False)
+        print(f"Results saved to {filename}")
+        
+        # Also save a summary
+        summary = df.groupby([
+            'num_particles', 'p_det', 'delta_v', 'delta_p', 'cluster_strategy',
+            'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
+            'avg_node_pot_threshold'
+        ]).agg({
+            'f1_score': ['mean', 'std', 'min', 'max'],
+            'precision': ['mean', 'std'],
+            'recall': ['mean', 'std'],
+            'num_reliable_negatives': ['mean', 'std'],
+            'coverage': ['mean', 'std', 'min', 'max'],
+            'fallback_rule_used': ['sum', 'count'],  # Count how many times fallback was used
+            'avg_threshold_criteria': ['sum', 'count']  # Count how many times threshold criteria was met
+        }).round(4)
+        
+        summary_filename = f"{self.output_dir}/{dataset_name}_summary_results.csv"
+        summary.to_csv(summary_filename)
+        print(f"Summary saved to {summary_filename}")
+    
+    def run_all_datasets(self):
+        """Run experiments on all available datasets."""
+        datasets = ['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere']
+        
+        all_results = {}
+        for dataset in datasets:
+            try:
+                print(f"\n{'='*50}")
+                print(f"Running experiments on {dataset.upper()} dataset")
+                print(f"{'='*50}")
+                
+                results_df = self.run_experiments(dataset)
+                all_results[dataset] = results_df
+                
+            except Exception as e:
+                print(f"Error running experiments on {dataset}: {e}")
+                continue
+        
+        return all_results
+
+def main():
+    """Main function to run experiments."""
+    # Initialize experiment runner
+    runner = PULearningExperimentRunner(
+        n_runs=5,  # Number of runs per parameter combination
+        output_dir="experiment_results",
+        random_seed=42
+    )
+    
+    # Run experiments on a specific dataset
+    print("Running experiments on Cora dataset...")
+    cora_results = runner.run_experiments('cora')
+    
+    # Or run on all datasets
+    # all_results = runner.run_all_datasets()
+    
+    print("\nExperiments completed!")
+    print(f"Results saved in: {runner.output_dir}/")
+
+if __name__ == "__main__":
+    main() 

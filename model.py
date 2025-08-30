@@ -38,7 +38,9 @@ def is_cluster_positive(
     if not nodes_in_cluster:
         return False
 
-    observed_labels = [graph.nodes[n]['observed_label'] for n in nodes_in_cluster]
+    # Use safer node access since graph nodes may have gaps after processing
+    node_attributes = dict(graph.nodes(data=True))
+    observed_labels = [node_attributes[n]['observed_label'] for n in nodes_in_cluster if n in node_attributes]
 
     if strategy == 'majority':
         label_counts = Counter(observed_labels)
@@ -48,7 +50,7 @@ def is_cluster_positive(
 
     elif strategy == 'percentage':
         count_positives = observed_labels.count(positive_label)
-        percentage_positives = count_positives / len(nodes_in_cluster)
+        percentage_positives = count_positives / len(observed_labels)
         return percentage_positives >= threshold
 
     else:
@@ -86,7 +88,7 @@ class ParticleCompetitionModel:
         self.cluster_sizes = defaultdict(int)
         self.cluster_positive_counts = defaultdict(int)
         self.patience = patience
-        self._stall_tolerance = 0.0001  # Internal constant for sensitivity
+        self._stall_tolerance = 0.001  # Internal constant for sensitivity
         self._potential_history = deque(maxlen=patience) # Tracks recent potential values
 
 
@@ -101,9 +103,11 @@ class ParticleCompetitionModel:
         self.initialize_particles()
 
         # Identify positive nodes (observed_label == 1)
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
         self.positive_nodes = [
-        node for node in self.graph.nodes 
-        if self.graph.nodes[node].get('observed_label') == 1
+            node for node in self.graph.nodes 
+            if node_attributes[node].get('observed_label') == 1
         ]
         if self.initialization_strategy == 'random':
             self._assigned_start_nodes = set()
@@ -209,7 +213,9 @@ class ParticleCompetitionModel:
         if old_owner == new_owner:
             return  # No change, nothing to do
 
-        is_positive = self.graph.nodes[node].get('observed_label') == 1
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        is_positive = node_attributes[node].get('observed_label') == 1
 
         # --- Update state for the old owner ---
         if old_owner is not None:
@@ -306,8 +312,10 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         node(Node): node the particle selected
         '''
-        current_owner = self.graph.nodes[node]['owner']
-        current_potential = self.graph.nodes[node]['potential']
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        current_owner = node_attributes[node]['owner']
+        current_potential = node_attributes[node]['potential']
 
         if current_owner is None:
             # Case 1: Node is free
@@ -324,9 +332,9 @@ class ParticleCompetitionModel:
         else:
             # Case 3: Node owned by another particle
             particle.potential = particle.potential - (particle.potential - 0.05) * self.delta_p
-            new_potential = self.graph.nodes[node]['potential'] - self.delta_v
+            new_potential = current_potential - self.delta_v
             self.graph.nodes[node]['potential'] = max(0.05, new_potential)
-            #self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
+            self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
             
             # Remove from particle's owned nodes if present
             if node in particle.visited_nodes:
@@ -336,7 +344,7 @@ class ParticleCompetitionModel:
             if particle.potential <= 0.05:
                 particle.potential = 0.05
                 if free_node := self.get_free_node():
-                    old_owner_of_free_node = self.graph.nodes[free_node]['owner']                
+                    old_owner_of_free_node = node_attributes[free_node]['owner']                
                     particle.visited_nodes.add(free_node)
                     self.graph.nodes[free_node]['owner'] = particle.id                
                     self._update_cluster_state(free_node, old_owner=old_owner_of_free_node, new_owner=particle.id)
@@ -347,8 +355,10 @@ class ParticleCompetitionModel:
                 self._update_cluster_state(node, old_owner=current_owner, new_owner=None)
 
     def get_free_node(self) -> Optional[Any]:
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
         return next(
-            (n for n in self.graph.nodes if self.graph.nodes[n]['owner'] is None),
+            (n for n in self.graph.nodes if node_attributes[n]['owner'] is None),
             None
         )
     
@@ -356,9 +366,11 @@ class ParticleCompetitionModel:
         """
         Check if the graph has at least one positive cluster using the specified strategy.
         """
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
         owner_groups = defaultdict(list)
         for node in self.graph.nodes:
-            if (owner := self.graph.nodes[node]['owner']) is not None:
+            if (owner := node_attributes[node]['owner']) is not None:
                 owner_groups[owner].append(node)
         
         return any(
@@ -420,6 +432,8 @@ class ParticleCompetitionModel:
     def run_simulation(self) -> nx.Graph:
         """Run the main simulation loop with clear stopping criteria."""
         iteration = 0
+        stopped_by_threshold = False
+        
         while True:
             iteration += 1
 
@@ -437,6 +451,7 @@ class ParticleCompetitionModel:
             # --- Stopping Criterion 1: Target Potential Reached ---
             if avg_potential >= self.average_node_potential_threshold:
                 print("Stopping simulation: Average node potential reached the threshold.")
+                stopped_by_threshold = True
                 break
 
             # --- Stopping Criterion 2: Potential Has Converged ---
@@ -449,12 +464,37 @@ class ParticleCompetitionModel:
                         f"Stopping simulation: Potential has converged. Change is below tolerance "
                         f"over the last {self.patience} iterations."
                     )
+                    stopped_by_threshold = False
                     break
 
+        # Store the stopping criteria flag in the graph for later access
+        self.graph.graph['avg_threshold_criteria'] = stopped_by_threshold
+        
+        # After simulation ends, ensure cluster state is properly initialized
+        self._finalize_cluster_state()
+        
         return self.graph
-     
+    
+    def _finalize_cluster_state(self):
+        """
+        Ensure cluster state is properly initialized after simulation ends.
+        This method recalculates cluster_positive_counts to ensure accuracy.
+        """
+        # Clear existing counts and recalculate
+        self.cluster_positive_counts.clear()
+        
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        
+        # Recalculate positive counts for each cluster
+        for owner, nodes in self.owner_groups.items():
+            positive_count = sum(1 for node in nodes if node_attributes[node].get('observed_label') == 1)
+            self.cluster_positive_counts[owner] = positive_count
+    
     def visualize_communities(self, G: nx.Graph) -> None:
-        color_map = [self.graph.nodes[n]['owner'] for n in self.graph.nodes]
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        color_map = [node_attributes[n]['owner'] for n in self.graph.nodes]
         nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
 
@@ -509,8 +549,12 @@ class ReliableNegativeSelection:
             if is_positive:
                 positive_clusters.append(owner)
         
+        # Track whether fallback rule was used
+        fallback_rule_used = False
+        
         # --- Fallback Rule (Now much faster) ---
         if not positive_clusters:
+            fallback_rule_used = True
             best_cluster_owner = None
             best_ratio = -1
             
@@ -536,8 +580,14 @@ class ReliableNegativeSelection:
                     if owner != best_cluster_owner:
                         for node in nodes:
                             self.graph.nodes[node]['cluster_positive'] = 0
+        
+        # Store the fallback flag in the graph for later access
+        self.graph.graph['fallback_rule_used'] = fallback_rule_used
 
     def calculate_dissimilarity(self):
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        
         label_clusters = defaultdict(list)
         for node, data in tqdm(self.graph.nodes(data=True), desc="Grouping nodes by cluster label", total=self.graph.number_of_nodes()):
             cluster_label = data.get('cluster_positive')
@@ -568,12 +618,20 @@ class ReliableNegativeSelection:
                     self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
 
     def rank_nodes_dissimilarity(self, num_neg: int = 10):
+        # Use safer node access since graph nodes may have gaps after processing
+        node_attributes = dict(self.graph.nodes(data=True))
+        
         # Filter for nodes in negative clusters that have a dissimilarity score
         data = [
-            (node, data.get('dissimilarity'))
-            for node, data in self.graph.nodes(data=True)
-            if data.get('cluster_positive') == 0 and data.get('dissimilarity') is not None
+            (node, node_attributes[node].get('dissimilarity'))
+            for node in self.graph.nodes
+            if node_attributes[node].get('cluster_positive') == 0 and node_attributes[node].get('dissimilarity') is not None
         ]
+        
+        # Only return results if we found at least num_neg nodes
+        if len(data) < num_neg:
+            return []
+        
         # Rank by dissimilarity (higher is better for reliable negatives)
         return sorted(data, key=lambda x: x[1], reverse=True)[:num_neg]
     
@@ -607,6 +665,10 @@ class PULearningPC:
         print(f"--- Step 1: Running Label Initialization ---")              
         self.pcm = ParticleCompetitionModel(self.graph, **self.pcm_params)
         self.labeled_graph = self.pcm.run_simulation()
+        
+        # Propagate the stopping criteria flag to the main graph
+        avg_threshold_criteria = self.pcm.graph.graph.get('avg_threshold_criteria', False)
+        self.labeled_graph.graph['avg_threshold_criteria'] = avg_threshold_criteria
 
     def select_reliable_negatives(self):
         print("\n--- Step 2: Selecting Reliable Negatives using rns ---")
@@ -621,7 +683,16 @@ class PULearningPC:
         rns.assign_cluster_label()
         rns.calculate_dissimilarity()
         
+        # Propagate the fallback rule flag back to the main graph
+        fallback_used = rns.graph.graph.get('fallback_rule_used', False)
+        self.labeled_graph.graph['fallback_rule_used'] = fallback_used
+        
         ranked_nodes = rns.rank_nodes_dissimilarity(num_neg=self.num_neg)
+        
+        if not ranked_nodes:
+            print(f"Warning: Could not find {self.num_neg} reliable negatives. Only found {len(ranked_nodes)} nodes with dissimilarity scores.")
+            return []
+        
         reliable_negatives = [node for node, _ in ranked_nodes]
         
         print(f"Identified {len(reliable_negatives)} reliable negatives.")
