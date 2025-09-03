@@ -37,6 +37,30 @@ python example_usage.py
 - **`example_usage.py`** - Examples showing different usage patterns
 - **`README_experiments.md`** - This file
 
+## 🚀 Parallel Execution
+
+The experiments now support parallel execution to significantly speed up large parameter sweeps:
+
+```bash
+# Use all available CPU cores (auto-detected)
+python run_experiments.py --dataset cora
+
+# Use specific number of parallel processes
+python run_experiments.py --dataset cora --n-jobs 4
+
+# Control number of reliable negatives
+python run_experiments.py --dataset cora --num-neg 100
+
+# Force sequential execution (for debugging)
+python run_experiments.py --dataset cora --n-jobs 1
+```
+
+**Performance Benefits:**
+- **Auto-detection**: Automatically uses optimal number of cores (capped at 8 to prevent memory issues)
+- **Linear scaling**: With N cores, you get approximately Nx speedup
+- **Memory efficient**: Each process loads the dataset independently
+- **Progress tracking**: Real-time progress bars and intermediate result saving
+
 ## ⚙️ Parameters Tested
 
 The framework automatically tests all combinations of these parameters:
@@ -52,12 +76,13 @@ The framework automatically tests all combinations of these parameters:
 | `movement_strategy` | ['uniform', 'degree_weighted'] | Particle movement strategy |
 | `initialization_strategy` | ['random', 'degree_weighted'] | Particle initialization strategy |
 | `avg_node_pot_threshold` | [0.7, 0.8, 0.9] | Stopping threshold |
+| `num_neg` | [200] (configurable) | Number of reliable negatives to select |
 
 ## 🎯 Datasets Supported
 
 - **Cora** - Citation network
 - **CiteSeer** - Citation network  
-- **Twitch** - Social network
+- **Twitch** - Social network (local files filtered to Portuguese users: ~1,912 nodes, ~64,510 edges)
 - **MNIST** - Image data (converted to graph)
 - **Ionosphere** - Feature data (converted to graph)
 
@@ -67,7 +92,7 @@ For each dataset, the framework generates:
 
 1. **`{dataset}_final_results.csv`** - All experiment results
 2. **`{dataset}_summary_results.csv`** - Aggregated results by parameter combination
-3. **`{dataset}_intermediate_results.csv`** - Intermediate saves (every 10 experiments)
+3. **`{dataset}_intermediate_results.csv`** - Intermediate saves (every 50 experiments in parallel mode)
 
 ### Understanding the Fallback Rule
 
@@ -81,14 +106,36 @@ This information helps you understand:
 - When your parameters are working well (fallback rule rarely used)
 - The robustness of your clustering strategy
 
+### Understanding the Iteration Count
+
+The **`final_iteration_count`** column shows how many iterations the particle competition simulation took to complete:
+
+- **Lower values** (e.g., < 100): Fast convergence, parameters working well
+- **Higher values** (e.g., > 500): Slow convergence, may need parameter tuning
+- **Very high values** (e.g., > 1000): Potential issues with stopping criteria
+
+This helps you:
+- Identify parameter combinations that converge quickly vs. slowly
+- Optimize your `avg_node_pot_threshold` parameter
+- Understand the computational cost of different parameter settings
+- Debug convergence issues
+
 ### Results Include:
 - All parameter values
 - F1 score, precision, recall
 - Number of reliable negatives selected
 - Coverage percentage
 - Fallback rule usage (whether the algorithm had to use fallback rule)
+- **Final iteration count** (how many iterations the simulation took to complete)
 - Graph statistics (nodes, edges)
 - Run status (success/error)
+
+### Summary File Statistics
+
+The summary file (`{dataset}_summary_results.csv`) provides aggregated statistics across all runs for each parameter combination:
+- **Performance metrics**: Mean, std, min, max for F1 score, precision, recall, coverage
+- **Algorithm behavior**: Count of fallback rule usage and threshold criteria usage
+- **Convergence analysis**: Mean, std, min, max for final iteration count
 
 ## 🔧 Customization
 
@@ -154,12 +201,6 @@ for param in ['num_particles', 'delta_v', 'delta_p']:
     print(f"{param} impact:\n{param_impact}\n")
 ```
 
-## ⚡ Performance Tips
-
-1. **Start Small**: Use `QUICK_TEST_PARAMS` for initial testing
-2. **Reduce Runs**: Start with `n_runs=2` or `n_runs=3`
-3. **Test Single Dataset**: Focus on one dataset first
-4. **Monitor Progress**: Results are saved every 10 experiments
 
 ## 🐛 Troubleshooting
 
@@ -187,14 +228,13 @@ def custom_evaluation(graph, reliable_negatives, ground_truth):
 runner.evaluate_reliable_negatives = custom_evaluation
 ```
 
-### Parallel Processing (Future)
+### Parallel Processing
 ```python
-# In experiment_config.py
-PARALLEL_CONFIG = {
-    'use_parallel': True,
-    'n_jobs': 4,
-    'backend': 'multiprocessing'
-}
+# Command line usage
+python run_experiments.py --dataset cora --n-jobs 4
+
+# Programmatic usage
+results = runner.run_experiments('cora', n_jobs=4)
 ```
 
 ### Custom Stopping Criteria
@@ -218,7 +258,7 @@ To extend the framework:
 - Add new evaluation metrics in `evaluate_reliable_negatives()`
 - Add new datasets in `load_dataset()`
 - Add new parameters in `get_parameter_grid()`
-- Implement parallel processing for faster execution
+- Customize parallel processing behavior in `_run_experiments_parallel()`
 
 ## 📚 Dependencies
 
@@ -227,6 +267,7 @@ To extend the framework:
 - `numpy` - Numerical operations
 - `scikit-learn` - Evaluation metrics
 - `tqdm` - Progress bars
+
 - Your existing `model.py` and `generate_dataset.py`
 
 ## 🎯 Next Steps

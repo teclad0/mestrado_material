@@ -446,7 +446,7 @@ class ParticleCompetitionModel:
             avg_potential = self.get_average_node_potential()
             self._potential_history.append(avg_potential)
             
-            print(f"Iteration: {iteration} | Avg Potential: {avg_potential:.4f} | Coverage: {self.get_graph_coverage()[1]:.4f}")
+            #print(f"Iteration: {iteration} | Avg Potential: {avg_potential:.4f} | Coverage: {self.get_graph_coverage()[1]:.4f}")
 
             # --- Stopping Criterion 1: Target Potential Reached ---
             if avg_potential >= self.average_node_potential_threshold:
@@ -458,7 +458,7 @@ class ParticleCompetitionModel:
             # This check runs only after the history deque is full
             if len(self._potential_history) == self.patience:
                 potential_change = np.std(self._potential_history)
-                print(f"Potential change over last {self.patience} iterations: {potential_change:.6f}")
+                #print(f"Potential change over last {self.patience} iterations: {potential_change:.6f}")
                 if potential_change < self._stall_tolerance:
                     print(
                         f"Stopping simulation: Potential has converged. Change is below tolerance "
@@ -467,8 +467,9 @@ class ParticleCompetitionModel:
                     stopped_by_threshold = False
                     break
 
-        # Store the stopping criteria flag in the graph for later access
+        # Store the stopping criteria flag and iteration count in the graph for later access
         self.graph.graph['avg_threshold_criteria'] = stopped_by_threshold
+        self.graph.graph['final_iteration_count'] = iteration
         
         # After simulation ends, ensure cluster state is properly initialized
         self._finalize_cluster_state()
@@ -519,12 +520,10 @@ class ReliableNegativeSelection:
         self.cluster_sizes = cluster_sizes
         self.cluster_positive_counts = cluster_positive_counts
 
-    def assign_cluster_label(self):
-        # The expensive step of grouping nodes is now GONE.
-        
+    def assign_cluster_label(self):      
         positive_clusters = []
-        # Iterate over clusters (particles), not nodes. This is much faster.
-        for owner, nodes in tqdm(self.owner_groups.items(), desc="Assigning cluster labels"):
+        #for owner, nodes in tqdm(self.owner_groups.items(), desc="Assigning cluster labels"):
+        for owner, nodes in self.owner_groups.items():
             cluster_size = self.cluster_sizes.get(owner, 0)
             if cluster_size < 3:
                 continue
@@ -559,7 +558,8 @@ class ReliableNegativeSelection:
             best_ratio = -1
             
             # This loop is now O(num_clusters), not O(num_nodes)
-            for owner in tqdm(self.owner_groups.keys(), desc="Finding best cluster by ratio"):
+            #for owner in tqdm(self.owner_groups.keys(), desc="Finding best cluster by ratio"):
+            for owner in self.owner_groups.keys():
                 cluster_size = self.cluster_sizes.get(owner, 0)
                 if cluster_size < 3:
                     continue
@@ -589,7 +589,9 @@ class ReliableNegativeSelection:
         node_attributes = dict(self.graph.nodes(data=True))
         
         label_clusters = defaultdict(list)
-        for node, data in tqdm(self.graph.nodes(data=True), desc="Grouping nodes by cluster label", total=self.graph.number_of_nodes()):
+        #for node, data in tqdm(self.graph.nodes(data=True), desc="Grouping nodes by cluster label", total=self.graph.number_of_nodes()):
+        #for node, data in self.graph.nodes(data=True):
+        for node, data in node_attributes.items():
             cluster_label = data.get('cluster_positive')
             if cluster_label is not None:
                 label_clusters[cluster_label].append(node)
@@ -598,15 +600,18 @@ class ReliableNegativeSelection:
         if not positive_nodes:
             print("Warning: No positive clusters found. Cannot calculate dissimilarity.")
             return
+        
         if self.dissimilarity_strategy == 'shortest_path':
             # --- Store distances from each positive node ---
             positive_node_distances = {}
-            for p_node in tqdm(positive_nodes, desc="Running SSSP from positive nodes", total=len(positive_nodes)):
+#            for p_node in tqdm(positive_nodes, desc="Running SSSP from positive nodes", total=len(positive_nodes)):
+            for p_node in positive_nodes:
                 # This gives {node: distance_from_p_node, ...}
                 positive_node_distances[p_node] = nx.single_source_shortest_path_length(self.graph, p_node)
 
             # --- Calculate mean dissimilarity for each negative node ---
-            for n_node in tqdm(label_clusters.get(0, []), desc="Calculating mean dissimilarity", total=len(label_clusters.get(0, []))):
+            #for n_node in tqdm(label_clusters.get(0, []), desc="Calculating mean dissimilarity", total=len(label_clusters.get(0, []))):
+            for n_node in label_clusters.get(0, []):
                 distances = []
                 for p_node in positive_nodes:
                     # Look up the pre-computed distance

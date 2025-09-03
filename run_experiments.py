@@ -8,6 +8,7 @@ and save results to CSV files.
 import argparse
 import sys
 import os
+import multiprocessing as mp
 from parametric_experiments import PULearningExperimentRunner
 
 def main():
@@ -57,6 +58,14 @@ Examples:
         type=int, 
         default=42,
         help='Random seed for reproducibility (default: 42)'
+    )
+    
+    # Parallelization options
+    parser.add_argument(
+        '--n-jobs', 
+        type=int, 
+        default=None,
+        help='Number of parallel jobs (default: auto-detect, use --n-jobs 1 for sequential)'
     )
     
     # Quick test option
@@ -121,6 +130,14 @@ Examples:
         nargs='+',
         type=float,
         help='Average node potential threshold values to test'
+    )
+    
+    # Model parameters
+    parser.add_argument(
+        '--num-neg',
+        type=int,
+        default=200,
+        help='Number of reliable negatives to select (default: 200)'
     )
     
     # Dataset-specific parameters
@@ -200,19 +217,52 @@ Examples:
     if args.avg_node_pot_threshold:
         default_params['avg_node_pot_threshold'] = args.avg_node_pot_threshold
     
-    # Dataset parameters
-    dataset_kwargs = {
-        'k': args.k,
-        'percent_positive': args.percent_positive,
-        'use_original_edges': args.use_original_edges,
-        'mst': args.mst
-    }
+    # Create dataset-specific parameter dictionaries
+    dataset_kwargs = {}
     
-    # Add dataset-specific parameters
+    # Cora dataset parameters
     if 'cora' in args.dataset:
-        dataset_kwargs['cora'] = {'positive_class_label': 3, **dataset_kwargs}
+        dataset_kwargs['cora'] = {
+            'k': args.k,
+            'positive_class_label': 3,
+            'percent_positive': args.percent_positive,
+            'use_original_edges': args.use_original_edges,
+            'mst': args.mst
+        }
+    
+    # CiteSeer dataset parameters
     if 'citeseer' in args.dataset:
-        dataset_kwargs['citeseer'] = {'positive_class_label': 2, **dataset_kwargs}
+        dataset_kwargs['citeseer'] = {
+            'k': args.k,
+            'positive_class_label': 2,
+            'percent_positive': args.percent_positive,
+            'use_original_edges': args.use_original_edges,
+            'mst': args.mst
+        }
+    
+    # Twitch dataset parameters (no 'k' parameter)
+    if 'twitch' in args.dataset:
+        dataset_kwargs['twitch'] = {
+            'percent_positive': args.percent_positive,
+            'mst': args.mst
+        }
+    
+    # MNIST dataset parameters
+    if 'mnist' in args.dataset:
+        dataset_kwargs['mnist'] = {
+            'k': args.k,
+            'percent_positive': args.percent_positive,
+            'mst': args.mst,
+            'n_samples': 3000
+        }
+    
+    # Ionosphere dataset parameters
+    if 'ionosphere' in args.dataset:
+        dataset_kwargs['ionosphere'] = {
+            'k': args.k,
+            'percent_positive': args.percent_positive,
+            'mst': args.mst
+        }
     
     print("="*80)
     print("PULearningPC Parametric Experiments")
@@ -232,6 +282,15 @@ Examples:
     
     print(f"Parameter combinations: {total_combinations}")
     print(f"Total experiments: {total_experiments}")
+    print(f"Reliable negatives per experiment: {args.num_neg}")
+    
+    # Show parallelization info
+    if args.n_jobs is None:
+        n_jobs = min(mp.cpu_count(), 8)
+        print(f"Parallelization: Auto-detected {n_jobs} processes")
+    else:
+        print(f"Parallelization: {args.n_jobs} processes")
+    
     print("="*80)
     
     # Initialize experiment runner
@@ -241,11 +300,8 @@ Examples:
         random_seed=args.random_seed
     )
     
-    # Override parameter generation with custom parameters
-    runner.get_parameter_grid = lambda: [
-        dict(zip(default_params.keys(), values)) 
-        for values in __import__('itertools').product(*default_params.values())
-    ]
+    # Set custom parameter ranges in the runner
+    runner.set_custom_parameter_ranges(default_params)
     
     # Run experiments on each dataset
     all_results = {}
@@ -257,10 +313,15 @@ Examples:
             print(f"{'='*50}")
             
             # Get dataset-specific kwargs
-            dataset_specific_kwargs = dataset_kwargs.get(dataset_name, dataset_kwargs).copy()
+            dataset_specific_kwargs = dataset_kwargs.get(dataset_name, {})
             
-            # Run experiments
-            results_df = runner.run_experiments(dataset_name, dataset_specific_kwargs)
+            # Run experiments with parallelization
+            results_df = runner.run_experiments(
+                dataset_name, 
+                dataset_specific_kwargs, 
+                n_jobs=args.n_jobs,
+                num_neg=args.num_neg
+            )
             all_results[dataset_name] = results_df
             
             # Display summary for this dataset

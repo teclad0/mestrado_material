@@ -204,67 +204,95 @@ def load_citeseer_scar(
 def load_twitch_scar(
     percent_positive: float,
     mst: bool = True,
-    n_samples: int = None,
-    stratified_sampling: bool = True,
     data_dir: str = 'data/twitch_gamers'
 ) -> nx.Graph:
-    print("Loading Twitch dataset from local files...")
-    features_path = os.path.join(data_dir, 'large_twitch_features.csv')
-    edges_path = os.path.join(data_dir, 'large_twitch_edges.csv')
-
+    """
+    Load Twitch dataset from local files, filtering to only include Portuguese (PT) users.
+    """
+    print("Loading Twitch dataset from local files, filtering to PT users...")
+    
     try:
+        # Load features and edges
+        features_path = os.path.join(data_dir, 'large_twitch_features.csv')
+        edges_path = os.path.join(data_dir, 'large_twitch_edges.csv')
+        
         features_df = pd.read_csv(features_path)
         edges_df = pd.read_csv(edges_path)
-    except FileNotFoundError as e:
-        print(f"Error: Could not find a file. {e}")
-        return None
-
-    features_df.rename(columns={'affiliate': 'true_label'}, inplace=True)
-    
-    G = nx.from_pandas_edgelist(edges_df, source='numeric_id_1', target='numeric_id_2', create_using=nx.Graph())
-    
-    all_features_df = features_df.set_index('numeric_id')
-    all_features = all_features_df.loc[sorted(all_features_df.index)].drop('true_label', axis=1).values
-    
-    if not nx.is_connected(G):
-        G = _handle_graph_connectivity(G, mst=mst, features=all_features)
-
-    connected_nodes = sorted(list(G.nodes()))
-    
-    if n_samples and n_samples < len(connected_nodes):
-        connected_df = all_features_df.loc[connected_nodes]
-        if stratified_sampling:
-            print(f"Sampling {n_samples} nodes with stratified sampling from the largest component...")
-            lcc_features = connected_df.drop('true_label', axis=1).values
-            lcc_labels = connected_df['true_label'].values
-            sample_indices_in_lcc = _stratified_sample(lcc_features, lcc_labels, n_samples)
-            sampled_node_ids = [connected_nodes[i] for i in sample_indices_in_lcc]
-        else:
-            print(f"Sampling the first {n_samples} nodes from the largest component...")
-            sampled_node_ids = connected_nodes[:n_samples]
         
-        G = G.subgraph(sampled_node_ids).copy()
-
-    final_nodes = sorted(list(G.nodes()))
-    final_features_df = all_features_df.loc[final_nodes]
-    
-    final_features = final_features_df.drop('true_label', axis=1).values
-    true_labels_binary = final_features_df['true_label'].values
-    
-    observed_labels = apply_scar_labeling(true_labels_binary, 1, percent_positive)
-
-    node_attributes = {
-        node_id: {
-            'features': final_features[i],
-            'true_label': true_labels_binary[i],
-            'observed_label': observed_labels[i]
-        }
-        for i, node_id in enumerate(final_nodes)
-    }
-    nx.set_node_attributes(G, node_attributes)
-    
-    print(f"Twitch graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
-    return G
+        print(f"Loaded features: {len(features_df)} users")
+        print(f"Loaded edges: {len(edges_df)} connections")
+        
+        # Filter to only PT users
+        pt_users = features_df[features_df['language'] == 'PT']
+        print(f"Found {len(pt_users)} PT users")
+        
+        if len(pt_users) == 0:
+            print("Error: No PT users found. Check if 'name' column contains 'PT' values.")
+            return None
+        
+        # Get the numeric IDs of PT users
+        pt_user_ids = set(pt_users['numeric_id'].values)
+        
+        # Filter edges to only include connections between PT users
+        pt_edges = edges_df[
+            (edges_df['numeric_id_1'].isin(pt_user_ids)) & 
+            (edges_df['numeric_id_2'].isin(pt_user_ids))
+        ]
+        
+        print(f"Found {len(pt_edges)} connections between PT users")
+        
+        # Create graph from PT edges
+        G = nx.from_pandas_edgelist(
+            pt_edges, 
+            source='numeric_id_1', 
+            target='numeric_id_2', 
+            create_using=nx.Graph()
+        )
+        
+        # Filter features to only PT users
+        pt_features_df = features_df[features_df['numeric_id'].isin(G.nodes())]
+        
+        # Rename affiliate column to true_label
+        pt_features_df = pt_features_df.copy()
+        pt_features_df['true_label'] = pt_features_df['affiliate']
+        
+        # Handle connectivity if needed
+        if not nx.is_connected(G):
+            print("Graph is not connected. Handling connectivity...")
+            # Get features for connectivity handling
+            all_features = pt_features_df.drop(['numeric_id', 'language', 'affiliate', 'true_label'], axis=1).values
+            G = _handle_graph_connectivity(G, mst=mst, features=all_features)
+        
+        # Get final node list after connectivity handling
+        final_nodes = sorted(list(G.nodes()))
+        final_features_df = pt_features_df[pt_features_df['numeric_id'].isin(final_nodes)]
+        
+        # Extract features and labels
+        final_features = final_features_df.drop(['numeric_id', 'language', 'affiliate', 'true_label'], axis=1).values
+        true_labels_binary = final_features_df['true_label'].values
+        
+        # Apply SCAR labeling
+        observed_labels = apply_scar_labeling(true_labels_binary, 1, percent_positive)
+        
+        # Set node attributes
+        node_attributes = {}
+        for i, node in enumerate(final_nodes):
+            node_attributes[node] = {
+                'features': final_features[i],
+                'true_label': true_labels_binary[i],
+                'observed_label': observed_labels[i]
+            }
+        
+        nx.set_node_attributes(G, node_attributes)
+        
+        print(f"Twitch-PT graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
+        return G
+        
+    except Exception as e:
+        print(f"Error loading Twitch dataset: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def load_mnist_scar(
@@ -272,13 +300,13 @@ def load_mnist_scar(
     k: int = 10,
     mst: bool = True,
     n_samples: int = None,
-    stratified_sampling: bool = True
+    stratified_sampling: bool = False
 ) -> nx.Graph:
     print("Loading MNIST dataset...")
     mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
     
-    features = mnist.data
-    labels = mnist.target.astype(int)
+    features = mnist.data[:n_samples]
+    labels = mnist.target.astype(int)[:n_samples]
 
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
@@ -290,18 +318,18 @@ def load_mnist_scar(
     
     connected_nodes = sorted(list(G.nodes()))
 
-    if n_samples and n_samples < len(connected_nodes):
-        lcc_features = features[connected_nodes]
-        lcc_labels = labels[connected_nodes]
-        if stratified_sampling:
-            print(f"Sampling {n_samples} nodes with stratified sampling from the largest component...")
-            sample_indices_in_lcc = _stratified_sample(lcc_features, lcc_labels, n_samples)
-            sampled_node_ids = [connected_nodes[i] for i in sample_indices_in_lcc]
-        else:
-            print(f"Sampling the first {n_samples} nodes from the largest component...")
-            sampled_node_ids = connected_nodes[:n_samples]
+    # if n_samples and n_samples < len(connected_nodes):
+    #     lcc_features = features[connected_nodes]
+    #     lcc_labels = labels[connected_nodes]
+    #     if stratified_sampling:
+    #         print(f"Sampling {n_samples} nodes with stratified sampling from the largest component...")
+    #         sample_indices_in_lcc = _stratified_sample(lcc_features, lcc_labels, n_samples)
+    #         sampled_node_ids = [connected_nodes[i] for i in sample_indices_in_lcc]
+    #     else:
+    #         print(f"Sampling the first {n_samples} nodes from the largest component...")
+    #         sampled_node_ids = connected_nodes[:n_samples]
         
-        G = G.subgraph(sampled_node_ids).copy()
+    #     G = G.subgraph(sampled_node_ids).copy()
 
     final_node_ids = sorted(list(G.nodes()))
 
