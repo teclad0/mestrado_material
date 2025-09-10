@@ -2,6 +2,11 @@
 """
 Analysis script for PULearningPC experiment results.
 This script generates charts and performs statistical analysis on the experimental results.
+
+New functionality:
+- Added filter_by_threshold parameter to control whether to filter by positive_cluster_threshold
+- When filter_by_threshold=False, the script aggregates across all positive_cluster_threshold values
+- This allows analysis of F1 scores vs num_particles with averaged results across thresholds
 """
 
 import pandas as pd
@@ -136,13 +141,18 @@ class ExperimentResultsAnalyzer:
         
         return filtered_data
     
-    def aggregate_data_by_particles(self, filtered_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    def aggregate_data_by_particles(self, filtered_data: Dict[str, pd.DataFrame], 
+                                   include_threshold_agg: bool = False,
+                                   keep_avg_node_pot: bool = False) -> Dict[str, pd.DataFrame]:
         """
         Aggregate data by taking mean across avg_node_pot_threshold for each combination of
         num_particles, initialization_strategy, and movement_strategy.
+        Optionally also aggregate across positive_cluster_threshold.
         
         Args:
             filtered_data: Dictionary of filtered DataFrames
+            include_threshold_agg: If True, also aggregate across positive_cluster_threshold
+            keep_avg_node_pot: If True, keep avg_node_pot_threshold in grouping (for heatmaps)
             
         Returns:
             Dictionary of aggregated DataFrames
@@ -151,8 +161,18 @@ class ExperimentResultsAnalyzer:
         
         for dataset, df in filtered_data.items():
             if 'avg_node_pot_threshold' in df.columns:
-                # Group by num_particles, initialization_strategy, movement_strategy
-                # and take mean of f1_score_mean and other metrics
+                # Define grouping columns
+                group_cols = ['num_particles', 'initialization_strategy', 'movement_strategy']
+                
+                # Add avg_node_pot_threshold to grouping if keeping it (for heatmaps)
+                if keep_avg_node_pot:
+                    group_cols.append('avg_node_pot_threshold')
+                
+                # Add positive_cluster_threshold to grouping if not aggregating across it
+                if not include_threshold_agg and 'positive_cluster_threshold' in df.columns:
+                    group_cols.append('positive_cluster_threshold')
+                
+                # Group by the specified columns and take mean of f1_score_mean and other metrics
                 agg_dict = {
                     'f1_score_mean': 'mean',
                     'f1_score_std': 'mean',  # Average the standard deviations
@@ -165,7 +185,7 @@ class ExperimentResultsAnalyzer:
                 # Only include columns that exist in the DataFrame
                 available_agg_dict = {k: v for k, v in agg_dict.items() if k in df.columns}
                 
-                aggregated_df = df.groupby(['num_particles', 'initialization_strategy', 'movement_strategy']).agg(available_agg_dict).reset_index()
+                aggregated_df = df.groupby(group_cols).agg(available_agg_dict).reset_index()
                 aggregated_data[dataset] = aggregated_df
                 print(f"  {dataset}: Aggregated from {len(df)} to {len(aggregated_df)} combinations")
             else:
@@ -175,6 +195,7 @@ class ExperimentResultsAnalyzer:
     
     def generate_f1_vs_particles_charts(self, 
                                       threshold: float = 0.1,
+                                      filter_by_threshold: bool = True,
                                       save_dir: str = "analysis_charts",
                                       figsize: Tuple[int, int] = (12, 8)) -> None:
         """
@@ -182,22 +203,32 @@ class ExperimentResultsAnalyzer:
         parameter combinations.
         
         Args:
-            threshold: Fixed positive_cluster_threshold value
+            threshold: Fixed positive_cluster_threshold value (used only if filter_by_threshold=True)
+            filter_by_threshold: If True, filter by threshold; if False, aggregate across all thresholds
             save_dir: Directory to save charts
             figsize: Figure size for charts
         """
-        print(f"\nGenerating F1 vs Particles charts (threshold={threshold})...")
+        if filter_by_threshold:
+            print(f"\nGenerating F1 vs Particles charts (threshold={threshold})...")
+        else:
+            print(f"\nGenerating F1 vs Particles charts (aggregated across all thresholds)...")
         
         # Create save directory
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True)
         
-        # Filter data by threshold
-        filtered_data = self.filter_data_by_threshold(threshold)
-        
+        # Filter data by threshold or use all data
+        if filter_by_threshold:
+            filtered_data = self.filter_data_by_threshold(threshold)
+        else:
+            filtered_data = {}
+            for dataset, df in self.summary_data.items():
+                filtered_df = df.copy()
+                filtered_data[dataset] = filtered_df
+
         # Aggregate data to handle multiple avg_node_pot_threshold values
         print("Aggregating data across avg_node_pot_threshold values...")
-        aggregated_data = self.aggregate_data_by_particles(filtered_data)
+        aggregated_data = self.aggregate_data_by_particles(filtered_data, include_threshold_agg=not filter_by_threshold)
         
         # Get unique combinations of initialization_strategy and movement_strategy
         all_combinations = set()
@@ -218,6 +249,7 @@ class ExperimentResultsAnalyzer:
                 init_strategy, 
                 movement_strategy, 
                 threshold,
+                filter_by_threshold,
                 save_path,
                 figsize
             )
@@ -229,6 +261,7 @@ class ExperimentResultsAnalyzer:
                                init_strategy: str,
                                movement_strategy: str,
                                threshold: float,
+                               filter_by_threshold: bool,
                                save_path: Path,
                                figsize: Tuple[int, int]) -> None:
         """
@@ -238,7 +271,11 @@ class ExperimentResultsAnalyzer:
         fig, ax = plt.subplots(figsize=figsize)
         
         chart_title = f"F1 Score vs Number of Particles\n"
-        chart_title += f"Init: {init_strategy}, Move: {movement_strategy}, Threshold: {threshold}"
+        chart_title += f"Init: {init_strategy}, Move: {movement_strategy}"
+        if filter_by_threshold:
+            chart_title += f", Threshold: {threshold}"
+        else:
+            chart_title += ", Aggregated across all thresholds"
         
         # Plot lines for each dataset
         for dataset in self.datasets:
@@ -263,8 +300,8 @@ class ExperimentResultsAnalyzer:
             
             # Plot the line
             ax.plot(
-                subset['num_particles'], 
-                subset['f1_score_mean'],
+                subset['num_particles'].values, 
+                subset['f1_score_mean'].values,
                 marker='o',
                 linewidth=2,
                 markersize=6,
@@ -276,9 +313,9 @@ class ExperimentResultsAnalyzer:
             # Add error bars if std is available
             if 'f1_score_std' in subset.columns:
                 ax.errorbar(
-                    subset['num_particles'],
-                    subset['f1_score_mean'],
-                    yerr=subset['f1_score_std'],
+                    subset['num_particles'].values,
+                    subset['f1_score_mean'].values,
+                    yerr=subset['f1_score_std'].values,
                     fmt='none',
                     alpha=0.5,
                     color=self.dataset_colors.get(dataset, 'black')
@@ -298,7 +335,10 @@ class ExperimentResultsAnalyzer:
         plt.tight_layout()
         
         # Save the chart
-        filename = f"f1_vs_particles_init_{init_strategy}_move_{movement_strategy}_thresh_{threshold}.png"
+        if filter_by_threshold:
+            filename = f"f1_vs_particles_init_{init_strategy}_move_{movement_strategy}_thresh_{threshold}.jpg"
+        else:
+            filename = f"f1_vs_particles_init_{init_strategy}_move_{movement_strategy}_aggregated.jpg"
         filepath = save_path / filename
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close()
@@ -307,6 +347,7 @@ class ExperimentResultsAnalyzer:
     
     def generate_heatmap_charts(self,
                                threshold: float = 0.1,
+                               filter_by_threshold: bool = True,
                                save_dir: str = "analysis_charts",
                                figsize: Tuple[int, int] = (12, 8)) -> None:
         """
@@ -314,19 +355,34 @@ class ExperimentResultsAnalyzer:
         for different parameter combinations.
         
         Args:
-            threshold: Fixed positive_cluster_threshold value
+            threshold: Fixed positive_cluster_threshold value (used only if filter_by_threshold=True)
+            filter_by_threshold: If True, filter by threshold; if False, aggregate across all thresholds
             save_dir: Directory to save charts
             figsize: Figure size for charts
         """
-        print(f"\nGenerating heatmap charts (threshold={threshold})...")
+        if filter_by_threshold:
+            print(f"\nGenerating heatmap charts (threshold={threshold})...")
+        else:
+            print(f"\nGenerating heatmap charts (aggregated across all thresholds)...")
         
         # Create save directory
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True)
         
-        # Filter data by threshold (don't aggregate for heatmaps)
-        filtered_data = self.filter_data_by_threshold(threshold)
-        
+        # Filter data by threshold or use all data
+        if filter_by_threshold:
+            filtered_data = self.filter_data_by_threshold(threshold)
+        else:
+            # For heatmaps, we need to aggregate across positive_cluster_threshold
+            # but keep avg_node_pot_threshold for the heatmap
+            filtered_data = {}
+            for dataset, df in self.summary_data.items():
+                filtered_df = df.copy()
+                filtered_data[dataset] = filtered_df
+            
+            # Aggregate across positive_cluster_threshold but keep avg_node_pot_threshold
+            print("Aggregating data across positive_cluster_threshold values...")
+            filtered_data = self.aggregate_data_by_particles(filtered_data, include_threshold_agg=True, keep_avg_node_pot=True)
         # Get unique combinations of initialization_strategy and movement_strategy
         all_combinations = set()
         for df in filtered_data.values():
@@ -346,6 +402,7 @@ class ExperimentResultsAnalyzer:
                 init_strategy, 
                 movement_strategy, 
                 threshold,
+                filter_by_threshold,
                 save_path,
                 figsize
             )
@@ -357,6 +414,7 @@ class ExperimentResultsAnalyzer:
                               init_strategy: str,
                               movement_strategy: str,
                               threshold: float,
+                              filter_by_threshold: bool,
                               save_path: Path,
                               figsize: Tuple[int, int]) -> None:
         """
@@ -367,7 +425,11 @@ class ExperimentResultsAnalyzer:
         axes = axes.flatten()
         
         chart_title = f"F1 Score Heatmap\n"
-        chart_title += f"Init: {init_strategy}, Move: {movement_strategy}, Threshold: {threshold}"
+        chart_title += f"Init: {init_strategy}, Move: {movement_strategy}"
+        if filter_by_threshold:
+            chart_title += f", Threshold: {threshold}"
+        else:
+            chart_title += ", Aggregated across all thresholds"
         
         for idx, dataset in enumerate(self.datasets):
             if dataset not in filtered_data:
@@ -419,7 +481,10 @@ class ExperimentResultsAnalyzer:
         plt.tight_layout()
         
         # Save the chart
-        filename = f"heatmap_init_{init_strategy}_move_{movement_strategy}_thresh_{threshold}.png"
+        if filter_by_threshold:
+            filename = f"heatmap_init_{init_strategy}_move_{movement_strategy}_thresh_{threshold}.jpg"
+        else:
+            filename = f"heatmap_init_{init_strategy}_move_{movement_strategy}_aggregated.jpg"
         filepath = save_path / filename
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close()
@@ -428,28 +493,39 @@ class ExperimentResultsAnalyzer:
     
     def generate_parameter_comparison_chart(self,
                                           threshold: float = 0.1,
+                                          filter_by_threshold: bool = True,
                                           save_dir: str = "analysis_charts",
                                           figsize: Tuple[int, int] = (15, 10)) -> None:
         """
         Generate a comprehensive chart comparing all parameter combinations.
         
         Args:
-            threshold: Fixed positive_cluster_threshold value
+            threshold: Fixed positive_cluster_threshold value (used only if filter_by_threshold=True)
+            filter_by_threshold: If True, filter by threshold; if False, aggregate across all thresholds
             save_dir: Directory to save charts
             figsize: Figure size for charts
         """
-        print(f"\nGenerating comprehensive parameter comparison chart...")
+        if filter_by_threshold:
+            print(f"\nGenerating comprehensive parameter comparison chart (threshold={threshold})...")
+        else:
+            print(f"\nGenerating comprehensive parameter comparison chart (aggregated across all thresholds)...")
         
         # Create save directory
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True)
         
-        # Filter data by threshold
-        filtered_data = self.filter_data_by_threshold(threshold)
+        # Filter data by threshold or use all data
+        if filter_by_threshold:
+            filtered_data = self.filter_data_by_threshold(threshold)
+        else:
+            filtered_data = {}
+            for dataset, df in self.summary_data.items():
+                filtered_df = df.copy()
+                filtered_data[dataset] = filtered_df
         
         # Aggregate data to handle multiple avg_node_pot_threshold values
         print("Aggregating data across avg_node_pot_threshold values...")
-        aggregated_data = self.aggregate_data_by_particles(filtered_data)
+        aggregated_data = self.aggregate_data_by_particles(filtered_data, include_threshold_agg=not filter_by_threshold)
         
         # Create subplots for each dataset
         fig, axes = plt.subplots(2, 2, figsize=figsize)
@@ -495,8 +571,8 @@ class ExperimentResultsAnalyzer:
                 
                 label = f"{init_strat}_{move_strat}"
                 ax.plot(
-                    subset['num_particles'],
-                    subset['f1_score_mean'],
+                    subset['num_particles'].values,
+                    subset['f1_score_mean'].values,
                     marker='o',
                     linewidth=2,
                     markersize=4,
@@ -514,12 +590,19 @@ class ExperimentResultsAnalyzer:
         for idx in range(len(self.datasets), len(axes)):
             axes[idx].set_visible(False)
         
-        plt.suptitle(f'F1 Score vs Number of Particles (Threshold={threshold})', 
-                    fontsize=16, fontweight='bold')
+        if filter_by_threshold:
+            plt.suptitle(f'F1 Score vs Number of Particles (Threshold={threshold})', 
+                        fontsize=16, fontweight='bold')
+        else:
+            plt.suptitle('F1 Score vs Number of Particles (Aggregated across all thresholds)', 
+                        fontsize=16, fontweight='bold')
         plt.tight_layout()
         
         # Save the chart
-        filename = f"comprehensive_f1_vs_particles_thresh_{threshold}.png"
+        if filter_by_threshold:
+            filename = f"comprehensive_f1_vs_particles_thresh_{threshold}.jpg"
+        else:
+            filename = f"comprehensive_f1_vs_particles_aggregated.jpg"
         filepath = save_path / filename
         plt.savefig(filepath, dpi=300, bbox_inches='tight')
         plt.close()
@@ -528,22 +611,37 @@ class ExperimentResultsAnalyzer:
     
     def generate_statistical_summary(self, 
                                    threshold: float = 0.1,
+                                   filter_by_threshold: bool = True,
                                    save_dir: str = "analysis_charts") -> None:
         """
         Generate statistical summary of the results.
         
         Args:
-            threshold: Fixed positive_cluster_threshold value
+            threshold: Fixed positive_cluster_threshold value (used only if filter_by_threshold=True)
+            filter_by_threshold: If True, filter by threshold; if False, aggregate across all thresholds
             save_dir: Directory to save summary
         """
-        print(f"\nGenerating statistical summary...")
+        if filter_by_threshold:
+            print(f"\nGenerating statistical summary (threshold={threshold})...")
+        else:
+            print(f"\nGenerating statistical summary (aggregated across all thresholds)...")
         
         # Create save directory
         save_path = Path(save_dir)
         save_path.mkdir(exist_ok=True)
         
-        # Filter data by threshold
-        filtered_data = self.filter_data_by_threshold(threshold)
+        # Filter data by threshold or use all data
+        if filter_by_threshold:
+            filtered_data = self.filter_data_by_threshold(threshold)
+        else:
+            filtered_data = {}
+            for dataset, df in self.summary_data.items():
+                filtered_df = df.copy()
+                filtered_data[dataset] = filtered_df
+            
+            # Aggregate across positive_cluster_threshold
+            print("Aggregating data across positive_cluster_threshold values...")
+            filtered_data = self.aggregate_data_by_particles(filtered_data, include_threshold_agg=True)
         
         summary_stats = []
         
@@ -601,11 +699,17 @@ class ExperimentResultsAnalyzer:
         summary_df = pd.DataFrame(summary_stats)
         
         # Save to CSV
-        summary_file = save_path / f"statistical_summary_thresh_{threshold}.csv"
+        if filter_by_threshold:
+            summary_file = save_path / f"statistical_summary_thresh_{threshold}.csv"
+        else:
+            summary_file = save_path / f"statistical_summary_aggregated.csv"
         summary_df.to_csv(summary_file, index=False)
         
         # Print summary
-        print(f"\nStatistical Summary (Threshold={threshold}):")
+        if filter_by_threshold:
+            print(f"\nStatistical Summary (Threshold={threshold}):")
+        else:
+            print(f"\nStatistical Summary (Aggregated across all thresholds):")
         print("=" * 80)
         
         for dataset in self.datasets:
@@ -632,12 +736,14 @@ class ExperimentResultsAnalyzer:
     
     def run_full_analysis(self, 
                          threshold: float = 0.1,
+                         filter_by_threshold: bool = True,
                          save_dir: str = "analysis_charts") -> None:
         """
         Run the complete analysis pipeline.
         
         Args:
-            threshold: Fixed positive_cluster_threshold value
+            threshold: Fixed positive_cluster_threshold value (used only if filter_by_threshold=True)
+            filter_by_threshold: If True, filter by threshold; if False, aggregate across all thresholds
             save_dir: Directory to save all outputs
         """
         print("=" * 80)
@@ -652,12 +758,12 @@ class ExperimentResultsAnalyzer:
             return
         
         # Generate charts
-        self.generate_f1_vs_particles_charts(threshold=threshold, save_dir=save_dir)
-        self.generate_heatmap_charts(threshold=threshold, save_dir=save_dir)
-        self.generate_parameter_comparison_chart(threshold=threshold, save_dir=save_dir)
+        self.generate_f1_vs_particles_charts(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
+        self.generate_heatmap_charts(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
+        self.generate_parameter_comparison_chart(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
         
         # Generate statistical summary
-        self.generate_statistical_summary(threshold=threshold, save_dir=save_dir)
+        self.generate_statistical_summary(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
         
         print("\n" + "=" * 80)
         print("Analysis Complete!")
@@ -687,6 +793,18 @@ def main():
         help='Fixed positive_cluster_threshold value (default: 0.1)'
     )
     parser.add_argument(
+        '--filter-by-threshold', 
+        action='store_true',
+        default=True,
+        help='Filter by threshold (default: True)'
+    )
+    parser.add_argument(
+        '--no-filter-by-threshold', 
+        action='store_false',
+        dest='filter_by_threshold',
+        help='Aggregate across all thresholds instead of filtering'
+    )
+    parser.add_argument(
         '--save-dir', 
         default='analysis_charts',
         help='Directory to save analysis outputs (default: analysis_charts)'
@@ -696,7 +814,7 @@ def main():
     
     # Create analyzer and run analysis
     analyzer = ExperimentResultsAnalyzer(results_dir=args.results_dir)
-    analyzer.run_full_analysis(threshold=args.threshold, save_dir=args.save_dir)
+    analyzer.run_full_analysis(threshold=args.threshold, filter_by_threshold=args.filter_by_threshold, save_dir=args.save_dir)
 
 
 if __name__ == "__main__":
