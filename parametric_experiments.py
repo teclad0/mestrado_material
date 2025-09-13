@@ -19,6 +19,7 @@ from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_twitch_scar, 
     load_mnist_scar, load_ionosphere_scar
 )
+from dataset_loader import DatasetLoader, load_dataset_for_model
 
 class PULearningExperimentRunner:
     """
@@ -30,7 +31,9 @@ class PULearningExperimentRunner:
                  n_runs: int = 5,
                  output_dir: str = "experiment_results",
                  random_seed: int = 42,
-                 dataset_name: str = None):
+                 dataset_name: str = None,
+                 use_saved_datasets: bool = False,
+                 datasets_dir: str = "datasets"):
         """
         Initialize the experiment runner.
         
@@ -38,10 +41,15 @@ class PULearningExperimentRunner:
             n_runs: Number of runs per parameter combination
             output_dir: Directory to save results
             random_seed: Random seed for reproducibility
+            dataset_name: Name of the dataset (for backward compatibility)
+            use_saved_datasets: Whether to use pre-generated datasets
+            datasets_dir: Directory containing pre-generated datasets
         """
         self.n_runs = n_runs
         self.output_dir = output_dir
         self.random_seed = random_seed
+        self.use_saved_datasets = use_saved_datasets
+        self.datasets_dir = datasets_dir
         
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
@@ -49,6 +57,10 @@ class PULearningExperimentRunner:
         # Set random seeds
         random.seed(random_seed)
         np.random.seed(random_seed)
+        
+        # Initialize dataset loader if using saved datasets
+        if use_saved_datasets:
+            self.dataset_loader = DatasetLoader(datasets_dir)
         
         # Initialize results storage
         self.results = []
@@ -118,17 +130,22 @@ class PULearningExperimentRunner:
                 'avg_node_pot_threshold': [0.7, 0.8, 0.9]
             }
     
-    def load_dataset(self, dataset_name: str, **kwargs) -> nx.Graph:
+    def load_dataset(self, dataset_name: str, dataset_filename: str = None, **kwargs) -> nx.Graph:
         """
         Load a specific dataset with default parameters.
         
         Args:
             dataset_name: Name of the dataset to load
+            dataset_filename: Optional filename for pre-generated dataset
             **kwargs: Additional parameters for dataset loading
             
         Returns:
             NetworkX graph
         """
+        if self.use_saved_datasets and dataset_filename:
+            # Load from pre-generated dataset
+            return self.dataset_loader.load_dataset_as_networkx(dataset_filename)
+        
         # Default parameters for each dataset
         default_params = {
             'cora': {
@@ -400,6 +417,7 @@ class PULearningExperimentRunner:
     def run_experiments(self, 
                        dataset_name: str,
                        dataset_kwargs: Dict[str, Any] = None,
+                       dataset_filename: str = None,
                        n_jobs: int = None,
                        num_neg: int = 200) -> pd.DataFrame:
         """
@@ -408,6 +426,7 @@ class PULearningExperimentRunner:
         Args:
             dataset_name: Name of the dataset to use
             dataset_kwargs: Additional parameters for dataset loading
+            dataset_filename: Optional filename for pre-generated dataset
             n_jobs: Number of parallel jobs (None = use all available cores)
             num_neg: Number of reliable negatives to select (default: 200)
             
@@ -417,7 +436,7 @@ class PULearningExperimentRunner:
         print(f"Starting experiments on {dataset_name} dataset...")
         
         # Load dataset
-        graph = self.load_dataset(dataset_name, **(dataset_kwargs or {}))
+        graph = self.load_dataset(dataset_name, dataset_filename, **(dataset_kwargs or {}))
         print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
         # Get parameter combinations
         param_combinations = self.get_parameter_grid()

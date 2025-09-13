@@ -104,4 +104,5 @@ target/
 .mypy_cache/
 scheduler.json
 dask-worker*
-
+test_*
+docs/

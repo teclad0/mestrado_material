@@ -1,6 +1,4 @@
 
-from torch_geometric.nn import GATConv, SAGEConv
-from torch_geometric.utils import dropout_adj
 from sklearn.cluster import KMeans
 import numpy as np
 from networkit.nxadapter import nk2nx
@@ -12,6 +10,35 @@ from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
 import torch.nn
 from sklearn.svm import OneClassSVM
+from sklearn.neighbors import kneighbors_graph
+import scipy.sparse as sp
+
+def mst_graph(features):
+    """
+    Create a minimum spanning tree graph from features.
+    
+    Args:
+        features: Feature matrix (tensor or numpy array)
+    
+    Returns:
+        Sparse adjacency matrix of the MST
+    """
+    if hasattr(features, 'detach'):
+        features = features.detach().numpy()
+    
+    # Create k-NN graph first
+    knn_graph = kneighbors_graph(features, n_neighbors=min(5, len(features)-1), 
+                                mode='connectivity', include_self=False)
+    
+    # Convert to NetworkX for MST computation
+    import networkx as nx
+    G = nx.from_scipy_sparse_array(knn_graph)
+    
+    # Compute MST
+    mst = nx.minimum_spanning_tree(G)
+    
+    # Convert back to sparse matrix
+    return nx.to_scipy_sparse_array(mst)
 
 def cluster_signal_ratio(cluster: list, positives: list, ratio: float = 0.5)-> int:
     '''
@@ -33,6 +60,62 @@ def cluster_signal_ratio(cluster: list, positives: list, ratio: float = 0.5)-> i
         return 1
     else:
         return 0
+
+def cluster_signal_ratio(cluster: list, positives: list, ratio: float = 0.5)-> int:
+    '''
+    Compute the signal of a cluster. If more than 0.5 of the cluster has positive labels, then return 1. Else, return 0
+
+    Parameters:
+    cluster: The cluster to determine if it's positive or negative
+    positives: The list of positive elements (indexes)
+    ratio: The ratio that determines if a cluster is positive or negative
+
+    Returns:
+    0 if the cluster is negative, 1 if it's positive
+    '''
+    pos = 0
+    for i in cluster:
+        if i in positives:
+            pos += 1
+    if pos > ratio * len(cluster):
+        return 1
+    else:
+        return 0
+    
+def cluster_signal_abs(cluster: list, positives: list, k: int):
+
+    '''
+    Compute the signal of a cluster based in how many positive elements they have. If there is more than num_positives/k positive elements, than the cluster is positive. Else, is negative.
+
+    Parameters:
+    cluster: The cluster to determine if it's positive or negative
+    positives: The list of positive elements (indexes)
+    k: the number of clusters used in the MCLS algorithm
+
+    Returns:
+    0 if the cluster is negative, 1 if it's positive   
+    '''
+    pos = 0
+    for i in cluster:
+        if i in positives:
+            pos += 1
+    if pos > len(positives) / k:
+        return 1
+    else:
+        return 0
+
+def euclidean_distance(tensor1: torch.tensor, tensor2: torch.tensor) -> torch.tensor:
+    '''
+    Compute the distance between two torch tensors
+
+    Parameters:
+    tensor1: the first input tensor
+    tensor2: the second input tensor
+
+    Returns:
+    The euclidean distance between tensor1 and tensor2
+    '''
+    return torch.sqrt(torch.sum((tensor1 - tensor2) ** 2))
 
 class MCLS:
     '''
@@ -93,6 +176,7 @@ class MCLS:
         # list to save the elements of positive and negative clusters
         positive_clusters = [cluster for cluster in clusters if cluster_signals[cluster] == 1]
         negative_clusters = [cluster for cluster in clusters if cluster_signals[cluster] == 0]
+        #import ipdb; ipdb.set_trace()
 
         # computing positive centroids
         positive_centroids = torch.tensor(np.array([cluster_centroids[i] for i in positive_clusters]))

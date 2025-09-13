@@ -69,7 +69,7 @@ class ParticleCompetitionModel:
         delta_v: float = 0.3,
         movement_strategy: str = 'uniform' ,
         initialization_strategy: str = 'random',
-        average_node_potential_threshold: float = 0.7,
+        average_node_potential_threshold: float = 0.6,
         patience: int = 50
     ):
         self.graph = graph.copy()
@@ -508,7 +508,7 @@ class ReliableNegativeSelection:
         cluster_sizes: Dict[int, int],     # Pass the state
         cluster_positive_counts: Dict[int, int], # Pass the state
         cluster_strategy: str = 'majority',
-        positive_cluster_threshold: float = 0.5,
+        positive_cluster_threshold: float = 0.1,
         dissimilarity_strategy: str = 'shortest_path', 
 
     ):

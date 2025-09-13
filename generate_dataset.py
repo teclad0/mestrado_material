@@ -203,7 +203,7 @@ def load_citeseer_scar(
 
 def load_twitch_scar(
     percent_positive: float,
-    mst: bool = True,
+    mst: bool = False,
     data_dir: str = 'data/twitch_gamers'
 ) -> nx.Graph:
     """
@@ -259,16 +259,18 @@ def load_twitch_scar(
         # Handle connectivity if needed
         if not nx.is_connected(G):
             print("Graph is not connected. Handling connectivity...")
-            # Get features for connectivity handling
-            all_features = pt_features_df.drop(['numeric_id', 'language', 'affiliate', 'true_label'], axis=1).values
+            # Get features for connectivity handling - only use numeric columns
+            feature_columns = ['views', 'mature', 'life_time', 'dead_account']
+            all_features = pt_features_df[feature_columns].values.astype(np.float64)
             G = _handle_graph_connectivity(G, mst=mst, features=all_features)
         
         # Get final node list after connectivity handling
         final_nodes = sorted(list(G.nodes()))
         final_features_df = pt_features_df[pt_features_df['numeric_id'].isin(final_nodes)]
         
-        # Extract features and labels
-        final_features = final_features_df.drop(['numeric_id', 'language', 'affiliate', 'true_label'], axis=1).values
+        # Extract features and labels - only use numeric columns
+        feature_columns = ['views', 'mature', 'life_time', 'dead_account']
+        final_features = final_features_df[feature_columns].values.astype(np.float64)
         true_labels_binary = final_features_df['true_label'].values
         
         # Apply SCAR labeling
