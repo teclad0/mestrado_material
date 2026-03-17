@@ -28,7 +28,7 @@ class DatasetManager:
         np.random.seed(random_seed)
         torch.manual_seed(random_seed)
     
-    def generate_and_save_dataset(self, dataset_name: str, dataset_params: Dict, n_samples: Optional[int] = None, percent_positive: float = 0.1) -> str:
+    def generate_and_save_dataset(self, dataset_name: str, dataset_params: Dict, n_samples: Optional[int] = None, percent_positive: float = 0.1, run_number: Optional[int] = None) -> str:
         """Generate and save a dataset as a NetworkX graph."""
         print(f"Generating {dataset_name} dataset...")
         
@@ -51,9 +51,17 @@ class DatasetManager:
         if graph is None:
             raise ValueError(f"Failed to load {dataset_name} dataset")
         
-      
-        # Save the graph directly
-        filename = f"{dataset_name}_{n_samples}_samples.pkl" if n_samples else f"{dataset_name}_full.pkl"
+        # Generate filename with percent_positive and run_number
+        percent_str = f"{int(percent_positive*100)}pct"
+        if run_number is not None:
+            if n_samples is not None:
+                filename = f"{dataset_name}_{n_samples}_samples_{percent_str}_run_{run_number}.pkl"
+            else:
+                filename = f"{dataset_name}_full_{percent_str}_run_{run_number}.pkl"
+        else:
+            # For backward compatibility, use original naming when no run_number
+            filename = f"{dataset_name}_{n_samples}_samples_{percent_str}.pkl" if n_samples else f"{dataset_name}_full_{percent_str}.pkl"
+        
         filepath = os.path.join(self.datasets_dir, filename)
         
         with open(filepath, 'wb') as f:
@@ -72,7 +80,7 @@ class DatasetManager:
     
     def load_graph(self, filename: str) -> nx.Graph:
         """Load a NetworkX graph from file."""
-        filepath = os.path.join(self.datasets_dir, filename)
+        filepath = os.path.join(filename)
         with open(filepath, 'rb') as f:
             return pickle.load(f)
     

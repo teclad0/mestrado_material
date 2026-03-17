@@ -77,9 +77,6 @@ class PULearningExperimentRunner:
             # Default parameter ranges
             param_ranges = {
                 'num_particles': [50, 100, 200, 387, 500],
-                'p_det': [0.6],  # Fixed at 0.6 as requested
-                'delta_v': [0.1, 0.2, 0.3, 0.4, 0.5],
-                'delta_p': [0.3, 0.5, 0.7, 0.8, 0.9],
                 'cluster_strategy': ['majority', 'percentage'],
                 'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
                 'movement_strategy': ['uniform', 'degree_weighted'],
@@ -120,9 +117,6 @@ class PULearningExperimentRunner:
             # Return default ranges
             return {
                 'num_particles': [50, 100, 200, 387, 500],
-                'p_det': [0.6],
-                'delta_v': [0.1, 0.2, 0.3, 0.4, 0.5],
-                'delta_p': [0.3, 0.5, 0.7, 0.8, 0.9],
                 'cluster_strategy': ['majority', 'percentage'],
                 'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
                 'movement_strategy': ['uniform', 'degree_weighted'],
@@ -202,10 +196,7 @@ class PULearningExperimentRunner:
                                   reliable_negatives: List[Any]) -> Dict[str, float]:
         """
         Evaluate the quality of reliable negative selection.
-        Following the exact same approach as in resultados.ipynb:
-        - y_true_f1 = [graph.nodes[n]['true_label'] for n in reliable_negatives]
-        - y_pred = [0] * len(reliable_negatives)
-        - f1_score(y_true_f1, y_pred, pos_label=0)
+
         
         Args:
             graph: NetworkX graph

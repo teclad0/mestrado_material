@@ -1,63 +1,89 @@
 #!/usr/bin/env python3
 """
-Example usage of the updated analyze_results.py script with the new filter_by_threshold option.
+Example usage of the updated run_multiple_experiments function
 """
 
-from analyze_results import ExperimentResultsAnalyzer
+from models_experiment import run_multiple_experiments, save_results_to_csv
 
-def main():
-    """Demonstrate both filtering and aggregation modes."""
+def example_single_percent_positive():
+    """Example with single percent_positive value (backward compatibility)"""
+    print("=== Example: Single percent_positive value ===")
     
-    # Create analyzer
-    analyzer = ExperimentResultsAnalyzer(results_dir="experiment_results")
-    
-    # Load data
-    analyzer.load_summary_results()
-    
-    if not analyzer.summary_data:
-        print("No summary data found! Please check the results directory.")
-        return
-    
-    print("=" * 80)
-    print("Example 1: Filter by threshold (default behavior)")
-    print("=" * 80)
-    
-    # Example 1: Filter by threshold (original behavior)
-    analyzer.generate_f1_vs_particles_charts(
-        threshold=0.1,
-        filter_by_threshold=True,
-        save_dir="analysis_charts_filtered"
+    results_df, summary_df = run_multiple_experiments(
+        dataset_name="cora", 
+        n_samples=100, 
+        percent_positive=0.1,  # Single value
+        n_runs=3,
+        save_results=True  # Automatically saves results (default)
     )
     
-    print("\n" + "=" * 80)
-    print("Example 2: Aggregate across all thresholds (new behavior)")
-    print("=" * 80)
+    print(f"Results DataFrame shape: {results_df.shape}")
+    print(f"Summary DataFrame shape: {summary_df.shape}")
+    print(f"Unique percent_positive values: {results_df['percent_positive'].unique()}")
     
-    # Example 2: Aggregate across all thresholds (new behavior)
-    analyzer.generate_f1_vs_particles_charts(
-        threshold=0.1,  # This parameter is ignored when filter_by_threshold=False
-        filter_by_threshold=False,
-        save_dir="analysis_charts_aggregated"
+    return results_df, summary_df
+
+def example_multiple_percent_positive():
+    """Example with multiple percent_positive values"""
+    print("\n=== Example: Multiple percent_positive values ===")
+    
+    results_df, summary_df = run_multiple_experiments(
+        dataset_name="cora", 
+        n_samples=100, 
+        percent_positive=[0.05, 0.1, 0.2, 0.3],  # List of values
+        n_runs=3,
+        save_results=True  # Automatically saves results (default)
     )
     
-    print("\n" + "=" * 80)
-    print("Example 3: Full analysis with aggregation")
-    print("=" * 80)
+    print(f"Results DataFrame shape: {results_df.shape}")
+    print(f"Summary DataFrame shape: {summary_df.shape}")
+    print(f"Unique percent_positive values: {results_df['percent_positive'].unique()}")
     
-    # Example 3: Run full analysis with aggregation
-    analyzer.run_full_analysis(
-        threshold=0.1,
-        filter_by_threshold=False,
-        save_dir="analysis_charts_full_aggregated"
+    # The summary_df will have one row per percent_positive value
+    print("\nSummary by percent_positive:")
+    for _, row in summary_df.iterrows():
+        print(f"  {row['percent_positive']*100}%: PULearningPC={row['mean_PULearningPC_f1']:.4f}, "
+              f"MCLS={row['mean_MCLS_f1']:.4f}, LP_PUL={row['mean_LP_PUL_f1']:.4f}")
+    
+    return results_df, summary_df
+
+def example_no_saving():
+    """Example with saving disabled"""
+    print("\n=== Example: No automatic saving ===")
+    
+    results_df, summary_df = run_multiple_experiments(
+        dataset_name="cora", 
+        n_samples=100, 
+        percent_positive=[0.1, 0.2],  # List of values
+        n_runs=2,
+        save_results=False  # Disable automatic saving
     )
     
-    print("\n" + "=" * 80)
-    print("Examples completed!")
-    print("=" * 80)
-    print("Generated files:")
-    print("  - analysis_charts_filtered/: Charts filtered by threshold=0.1")
-    print("  - analysis_charts_aggregated/: Charts aggregated across all thresholds")
-    print("  - analysis_charts_full_aggregated/: Complete analysis aggregated across all thresholds")
+    print(f"Results DataFrame shape: {results_df.shape}")
+    print(f"Summary DataFrame shape: {summary_df.shape}")
+    print("Results not automatically saved (save_results=False)")
+    
+    return results_df, summary_df
 
 if __name__ == "__main__":
-    main()
+    print("Updated run_multiple_experiments function examples")
+    print("=" * 60)
+    
+    # Example 1: Single percent_positive (backward compatibility)
+    example_single_percent_positive()
+    
+    # Example 2: Multiple percent_positive values
+    example_multiple_percent_positive()
+    
+    # Example 3: No automatic saving
+    example_no_saving()
+    
+    print("\n" + "=" * 60)
+    print("Examples completed!")
+    print("\nKey features:")
+    print("- Backward compatible: single percent_positive value works as before")
+    print("- New functionality: pass a list of percent_positive values")
+    print("- Separate summaries: each percent_positive gets its own summary row")
+    print("- Automatic saving: results are automatically saved to CSV files")
+    print("- Optional saving: set save_results=False to disable automatic saving")
+    print("- Easy analysis: summary_df allows easy comparison across percent_positive values")

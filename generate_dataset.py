@@ -107,7 +107,6 @@ def _load_planetoid_dataset(
     k: int,
     mst: bool,
     n_samples: int,
-    stratified_sampling: bool,
     data_dir: str
 ) -> nx.Graph:
     """
@@ -139,17 +138,8 @@ def _load_planetoid_dataset(
     # --- Step 2: Then, perform sampling on the connected graph ---
     connected_nodes = sorted(list(G.nodes()))
     if n_samples and n_samples < len(connected_nodes):
-        if stratified_sampling:
-            print(f"Sampling {n_samples} nodes with stratified sampling from the largest component...")
-            # Filter features/labels to only the connected component for stratified sampling
-            lcc_features = all_features[connected_nodes]
-            lcc_labels = all_labels[connected_nodes]
-            sample_indices_in_lcc = _stratified_sample(lcc_features, lcc_labels, n_samples)
-            # Map back to original node IDs
-            sampled_node_ids = [connected_nodes[i] for i in sample_indices_in_lcc]
-        else:
-            print(f"Sampling the first {n_samples} nodes from the largest component...")
-            sampled_node_ids = connected_nodes[:n_samples]
+        print(f"Sampling the first {n_samples} nodes from the largest component...")
+        sampled_node_ids = connected_nodes[:n_samples]
         
         G = G.subgraph(sampled_node_ids).copy()
 
@@ -159,7 +149,7 @@ def _load_planetoid_dataset(
     final_labels = all_labels[final_node_ids]
 
     final_labels_binary = binarize_labels(final_labels, positive_class_label)
-    final_observed_labels = apply_scar_labeling(final_labels_binary, 1, percent_positive)
+    final_observed_labels = apply_scar_labeling(final_labels_binary, positive_class_label, percent_positive)
     
     node_attributes = {
         node_id: {
@@ -182,10 +172,9 @@ def load_cora_scar(
     k: int = 10,
     mst: bool = True,
     n_samples: int = None,
-    stratified_sampling: bool = True,
     data_dir: str = '/tmp/Cora'
 ) -> nx.Graph:
-    return _load_planetoid_dataset("Cora", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, stratified_sampling, data_dir)
+    return _load_planetoid_dataset("Cora", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, data_dir)
 
 
 def load_citeseer_scar(
@@ -195,10 +184,9 @@ def load_citeseer_scar(
     k: int = 10,
     mst: bool = True,
     n_samples: int = None,
-    stratified_sampling: bool = True,
     data_dir: str = '/tmp/CiteSeer'
 ) -> nx.Graph:
-    return _load_planetoid_dataset("CiteSeer", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, stratified_sampling, data_dir)
+    return _load_planetoid_dataset("CiteSeer", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, data_dir)
 
 
 def load_twitch_scar(
@@ -302,7 +290,6 @@ def load_mnist_scar(
     k: int = 10,
     mst: bool = True,
     n_samples: int = None,
-    stratified_sampling: bool = False
 ) -> nx.Graph:
     print("Loading MNIST dataset...")
     mnist = fetch_openml('mnist_784', version=1, as_frame=False, parser='auto')
