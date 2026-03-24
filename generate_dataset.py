@@ -67,11 +67,11 @@ def _handle_graph_connectivity(G: nx.Graph, mst: bool, features: np.ndarray = No
         return G_connected
 
 
-def apply_scar_labeling(labels: np.ndarray, positive_class_label: int, percent_positive: float) -> np.ndarray:
+def apply_scar_labeling(labels: np.ndarray, percent_positive: float) -> np.ndarray:
     """
     Applies the SCAR (Selected Completely at Random) labeling assumption.
     """
-    positive_indices = np.where(labels == positive_class_label)[0]
+    positive_indices = np.where(labels == 1)[0]
     num_to_label = int(len(positive_indices) * percent_positive)
     labeled_indices = np.random.choice(positive_indices, size=num_to_label, replace=False) if num_to_label > 0 else []
     
@@ -118,7 +118,6 @@ def _load_planetoid_dataset(
     print(f"Loading {name} dataset...")
     dataset = Planetoid(root=data_dir, name=name)
     data = dataset[0]
-
     G = to_networkx(data, to_undirected=True)
     all_features = data.x.numpy()
     all_labels = data.y.numpy()
@@ -147,10 +146,10 @@ def _load_planetoid_dataset(
     
     final_features = all_features[final_node_ids]
     final_labels = all_labels[final_node_ids]
-
-    final_labels_binary = binarize_labels(final_labels, positive_class_label)
-    final_observed_labels = apply_scar_labeling(final_labels_binary, positive_class_label, percent_positive)
     
+    final_labels_binary = binarize_labels(final_labels, positive_class_label)
+    final_observed_labels = apply_scar_labeling(final_labels_binary, percent_positive)
+
     node_attributes = {
         node_id: {
             'features': final_features[i],
@@ -262,7 +261,7 @@ def load_twitch_scar(
         true_labels_binary = final_features_df['true_label'].values
         
         # Apply SCAR labeling
-        observed_labels = apply_scar_labeling(true_labels_binary, 1, percent_positive)
+        observed_labels = apply_scar_labeling(true_labels_binary, percent_positive)
         
         # Set node attributes
         node_attributes = {}
@@ -327,7 +326,7 @@ def load_mnist_scar(
 
     positive_classes = [0, 2, 4, 6, 8]
     final_labels_binary = np.isin(final_labels, positive_classes).astype(int)
-    final_observed_labels = apply_scar_labeling(final_labels_binary, 1, percent_positive)
+    final_observed_labels = apply_scar_labeling(final_labels_binary, percent_positive)
 
     final_features_scaled = scaler.fit_transform(final_features)
 
@@ -392,7 +391,7 @@ def load_ionosphere_scar(
 
     positive_class_label = le.transform(['g'])[0]
     final_labels_binary = binarize_labels(final_labels, positive_class_label)
-    final_observed_labels = apply_scar_labeling(final_labels_binary, 1, percent_positive)
+    final_observed_labels = apply_scar_labeling(final_labels_binary, percent_positive)
     
     final_features_scaled = scaler.fit_transform(final_features)
 
