@@ -15,6 +15,92 @@ from sklearn.neighbors import kneighbors_graph
 import scipy.sparse as sp
 
 
+class RCSVM:
+    '''
+    Class to implement the RCSVM algorithm
+
+    Main changes: Considering the fact that the model automatically returns the number of reliable negative elements, we change the number of elements to be returned. This action is justified by the fact that the benchmark needs to be more fair possible.
+    '''
+    def __init__(self, data, alpha=0.7, beta=0.3):
+        
+        self.alpha = alpha
+        self.beta = beta
+
+        if isinstance(data, nx.Graph):
+            node_list = sorted(list(data.nodes()))
+            self._idx_to_node = node_list
+            features = np.array([data.nodes[node]['features'] for node in node_list])
+            observed = np.array([data.nodes[node]['observed_label'] for node in node_list])
+            self.data = torch.tensor(features, dtype=torch.float)
+            self.positives = torch.tensor(np.where(observed == 1)[0], dtype=torch.long)
+            self.unlabeled = torch.tensor(np.where(observed == 0)[0], dtype=torch.long)
+
+        else:
+            self._idx_to_node = None
+            self.data = data.x
+            self.positives = _to_long_tensor(data.P)
+            self.unlabeled = _to_long_tensor(data.U)
+
+    def _restore_original_node_ids(self, indices):
+        """Map internal contiguous indices back to original graph node ids when needed."""
+        if self._idx_to_node is None:
+            return indices
+        if isinstance(indices, torch.Tensor):
+            mapped = [self._idx_to_node[int(i)] for i in indices.tolist()]
+        else:
+            mapped = [self._idx_to_node[int(i)] for i in indices]
+        if all(isinstance(x, (int, np.integer)) for x in mapped):
+            return torch.tensor(mapped, dtype=torch.long)
+        return mapped
+
+    def train(self):
+        '''
+        Method to train the model
+        '''
+        # sum of positive elements
+        soma_positive = 0
+        for element in self.positives:
+            soma_positive += self.data[element] / torch.norm(self.data[element], p = 2)
+            
+        # sum of unlabeled elements
+        soma_unlabeled = 0
+        for element in self.unlabeled:
+            soma_unlabeled += self.data[element] / torch.norm(self.data[element], p = 2)
+
+
+        # representant vectors
+        self.c_positive = (self.alpha / len(self.positives)) * soma_positive - (self.beta / len(self.unlabeled)) * soma_unlabeled 
+        self.c_negative = (self.alpha/ len(self.unlabeled)) *  soma_unlabeled - (self.beta / len(self.positives)) * soma_positive
+
+    def negative_inference(self, num_neg=None):
+        '''
+        Method that will return the reliable negative examples.
+        An element is a reliable negative if cosine similarity to c_negative
+        is greater than cosine similarity to c_positive.
+
+        Parameters:
+        num_neg (int): Maximum number of reliable negative elements to return
+
+        Returns:
+        torch.tensor: tensor of negative elements.
+        '''
+        def cosine_sim(a, b):
+            return torch.dot(a, b) / (torch.norm(a) * torch.norm(b) + 1e-8)
+
+        RN = []
+        for element in self.unlabeled:
+            x = self.data[element]
+            if cosine_sim(self.c_negative, x) > cosine_sim(self.c_positive, x):
+                RN.append(element.item())
+
+        if len(RN) == 0:
+            return torch.tensor([], dtype=torch.long)
+        if num_neg is not None:
+            RN = RN[:num_neg]
+        result = torch.tensor(RN, dtype=torch.long)
+        return self._restore_original_node_ids(result)
+
+
     
 def phy(m):
     '''
