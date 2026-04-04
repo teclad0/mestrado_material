@@ -14,7 +14,7 @@ from models import MCLS
 
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_twitch_scar, 
-    load_mnist_scar
+    load_mnist_scar, load_ionosphere_scar
 )
 
 class DatasetManager:    
@@ -45,6 +45,8 @@ class DatasetManager:
             graph = load_twitch_scar(**dataset_params)
         elif dataset_name == 'mnist':
             graph = load_mnist_scar(**dataset_params)
+        elif dataset_name == 'ionosphere':
+            graph = load_ionosphere_scar(**dataset_params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
         
