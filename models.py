@@ -14,6 +14,139 @@ from sklearn.svm import OneClassSVM
 from sklearn.neighbors import kneighbors_graph
 import scipy.sparse as sp
 
+
+    
+def phy(m):
+    '''
+    Function to compute phy value of CCRNE algorithm
+
+    Parameter: 
+    m: number of positive examples
+
+    Returns:
+    torch.tensor: value of phy
+    '''
+    return torch.log2(m) + 1
+
+def return_index(centroids, O_j):
+    '''
+    Return the index of the O_j centroid
+
+    centroids (list): list of centroids
+    O_j (torch.tensor): centroid
+
+    Returns:
+    int: index of O_j
+    '''
+    for index,value in enumerate(centroids):
+        if torch.equal(value, O_j):
+            return index
+
+class CCRNE:
+    '''
+    Class that implement CCRNE algorithm
+
+    Main changes: To guarantee that all the elements will no be considered as negatives, we add the parameter ratio. This parameter is responsible for reducing the length of r_p.
+    '''
+    def __init__(self, data, ratio=0.3):
+        self.clusters = dict()
+        self.r_p = 0
+        self.ratio = ratio
+
+        if isinstance(data, nx.Graph):
+            node_list = sorted(list(data.nodes()))
+            self._idx_to_node = node_list
+            features = np.array([data.nodes[node]['features'] for node in node_list])
+            observed = np.array([data.nodes[node]['observed_label'] for node in node_list])
+            self.data = torch.tensor(features, dtype=torch.float)
+            self.positives = torch.tensor(np.where(observed == 1)[0], dtype=torch.long)
+            self.unlabeled = torch.tensor(np.where(observed == 0)[0], dtype=torch.long)
+        else:
+            self._idx_to_node = None
+            self.data = data.x
+            self.positives = _to_long_tensor(data.P)
+            self.unlabeled = _to_long_tensor(data.U)
+
+    def _restore_original_node_ids(self, indices):
+        """Map internal contiguous indices back to original graph node ids when needed."""
+        if self._idx_to_node is None:
+            return indices
+        if isinstance(indices, torch.Tensor):
+            mapped = [self._idx_to_node[int(i)] for i in indices.tolist()]
+        else:
+            mapped = [self._idx_to_node[int(i)] for i in indices]
+        if all(isinstance(x, (int, np.integer)) for x in mapped):
+            return torch.tensor(mapped, dtype=torch.long)
+        return mapped
+
+    def train(self):
+        '''
+        Method to train the model
+        '''
+
+        # Crating a mask for positive elements
+        self.pul_mask = torch.zeros(len(self.data))
+        for i in self.positives:
+            self.pul_mask[i] = 1
+        self.pul_mask = self.pul_mask.bool()
+
+        # Setting the centroid O_p and the value r
+        O_p = self.data[self.pul_mask].mean(dim = 0)
+        r = torch.max(torch.tensor([euclidean_distance(x_k, O_p) for x_k in self.data[self.pul_mask]]))
+
+        # Computing r_p and phy
+        m = torch.tensor(len(self.positives))
+        self.r_p = (r * phy(m))/(phy(m) + 1)
+
+
+        # Associating every cluster to a centroid
+        self.clusters[0] = {'cluster' : [self.positives[0]],
+                    'centroid' : self.data[self.positives[0]]}
+
+        # Clustering element given r_p
+        Z = self.positives[1:]
+        n = 1
+
+        for x_i in Z:
+            lista_distancia = torch.tensor([euclidean_distance(self.data[x_i], O_k) for O_k in [self.clusters[i]['centroid'] for i in range(len(self.clusters))]])
+            centroids = torch.tensor([self.clusters[i]['centroid'].tolist() for i in range(len(self.clusters))])
+            order_idnex = torch.argsort(lista_distancia)
+            centroids_ordenado = centroids[order_idnex]
+
+            O_j = centroids_ordenado[0]
+            j = return_index(centroids, O_j)
+
+            if euclidean_distance(self.data[x_i], O_j) < self.r_p:
+                self.clusters[j]['cluster'].append(x_i)
+                O_j = (n * O_j + self.data[x_i]) / (n + 1)
+                n += 1
+                self.clusters[j]['centroid'] = O_j
+            
+            else:
+                self.clusters[(len(self.clusters))] = dict()
+                self.clusters[len(self.clusters) - 1]['cluster'] = [x_i]
+                self.clusters[len(self.clusters) - 1]['centroid'] = self.data[x_i]
+
+    
+    def negative_inference(self, num_neg):
+        '''
+        Function to compute the reliable negatives
+
+        Parameters:
+        num_neg (int): Number of elements to return as reliable negatives
+
+        Returns:
+        list: List of reliable negatives indexes
+        '''
+        RN = self.unlabeled
+
+        for i in range(len(self.clusters)):
+            for x_i in RN:
+                    if euclidean_distance(self.data[x_i], self.clusters[i]['centroid']) < self.ratio * self.r_p:
+                        RN = RN[RN != x_i]
+        return self._restore_original_node_ids(RN[:num_neg])
+
+
 def _to_long_tensor(indices):
     """Convert list/array/tensor indices to a 1-D long tensor."""
     if isinstance(indices, torch.Tensor):
