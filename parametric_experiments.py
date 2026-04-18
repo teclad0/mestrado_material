@@ -6,7 +6,6 @@ import json
 import os
 from typing import Dict, List, Any, Tuple
 from itertools import product
-from sklearn.metrics import f1_score, precision_score, recall_score
 from tqdm import tqdm
 import warnings
 import multiprocessing as mp
@@ -20,6 +19,7 @@ from generate_dataset import (
     load_mnist_scar, load_ionosphere_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
+from models_experiment import evaluate_reliable_negative_metrics
 
 class PULearningExperimentRunner:
     """
@@ -191,66 +191,6 @@ class PULearningExperimentRunner:
     
 
     
-    def evaluate_reliable_negatives(self, 
-                                  graph: nx.Graph, 
-                                  reliable_negatives: List[Any]) -> Dict[str, float]:
-        """
-        Evaluate the quality of reliable negative selection.
-
-        
-        Args:
-            graph: NetworkX graph
-            reliable_negatives: List of nodes identified as reliable negatives
-            ground_truth_labels: Ground truth labels for evaluation
-            
-        Returns:
-            Dictionary with evaluation metrics
-        """
-        if not reliable_negatives:
-            return {
-                'f1_score': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'num_reliable_negatives': 0
-            }
-        # Check if graph has true_label attribute - use safer node access
-        if not any('true_label' in graph.nodes[node] for node in graph.nodes()):
-            print("Warning: Graph does not have 'true_label' attribute. Cannot calculate accurate metrics.")
-            return {
-                'f1_score': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'num_reliable_negatives': len(reliable_negatives)
-            }
-        
-        # Follow exactly the same approach as in resultados.ipynb
-        try:
-            # Use safer node access since graph nodes may have gaps after processing
-            # Get all node attributes as a dictionary for safe access
-            node_attributes = dict(graph.nodes(data=True))
-            
-            # y_true_f1 = [graph.nodes[n]['true_label'] for n in reliable_negatives]
-            y_true_f1 = [node_attributes[n]['true_label'] for n in reliable_negatives if n in node_attributes]
-            
-            # y_pred = [0] * len(reliable_negatives)  # All predicted as reliable negatives
-            y_pred = [0] * len(y_true_f1)  # Adjust length based on valid nodes
-            
-            # Calculate F1 score with pos_label=0 (treating reliable negatives as positive class)
-            f1 = f1_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
-            precision = precision_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
-            recall = recall_score(y_true_f1, y_pred, pos_label=0, zero_division=0)
-            
-        except Exception as e:
-            print(f"Warning: Error calculating metrics: {e}")
-            f1, precision, recall = 0.0, 0.0, 0.0
-        
-        return {
-            'f1_score': f1,
-            'precision': precision,
-            'recall': recall,
-            'num_reliable_negatives': len(reliable_negatives)
-        }
-    
     def run_single_experiment(self, 
                              graph: nx.Graph,
                              params: Dict[str, Any],
@@ -278,9 +218,6 @@ class PULearningExperimentRunner:
             # Extract parameters
             pcm_params = {
                 'num_particles': params['num_particles'],
-                'p_det': params['p_det'],
-                'delta_v': params['delta_v'],
-                'delta_p': params['delta_p'],
                 'movement_strategy': params['movement_strategy'],
                 'initialization_strategy': params['initialization_strategy'],
                 'average_node_potential_threshold': params['avg_node_pot_threshold']
@@ -312,9 +249,6 @@ class PULearningExperimentRunner:
                 result = {
                     'run_id': run_id,
                     'num_particles': params['num_particles'],
-                    'p_det': params['p_det'],
-                    'delta_v': params['delta_v'],
-                    'delta_p': params['delta_p'],
                     'cluster_strategy': params['cluster_strategy'],
                     'positive_cluster_threshold': params['positive_cluster_threshold'],
                     'movement_strategy': params['movement_strategy'],
@@ -335,7 +269,7 @@ class PULearningExperimentRunner:
                 return result
             
             # Evaluate results
-            metrics = self.evaluate_reliable_negatives(
+            metrics = evaluate_reliable_negative_metrics(
                 graph, reliable_negatives
             )
             
@@ -355,9 +289,6 @@ class PULearningExperimentRunner:
             result = {
                 'run_id': run_id,
                 'num_particles': params['num_particles'],
-                'p_det': params['p_det'],
-                'delta_v': params['delta_v'],
-                'delta_p': params['delta_p'],
                 'cluster_strategy': params['cluster_strategy'],
                 'positive_cluster_threshold': params['positive_cluster_threshold'],
                 'movement_strategy': params['movement_strategy'],
@@ -383,9 +314,6 @@ class PULearningExperimentRunner:
             result = {
                 'run_id': run_id,
                 'num_particles': params.get('num_particles', -1),
-                'p_det': params.get('p_det', -1),
-                'delta_v': params.get('delta_v', -1),
-                'delta_p': params.get('delta_p', -1),
                 'cluster_strategy': params.get('cluster_strategy', 'error'),
                 'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
                 'movement_strategy': params.get('movement_strategy', 'error'),
@@ -526,9 +454,6 @@ class PULearningExperimentRunner:
                         error_result = {
                             'run_id': run_id,
                             'num_particles': params.get('num_particles', -1),
-                            'p_det': params.get('p_det', -1),
-                            'delta_v': params.get('delta_v', -1),
-                            'delta_p': params.get('delta_p', -1),
                             'cluster_strategy': params.get('cluster_strategy', 'error'),
                             'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
                             'movement_strategy': params.get('movement_strategy', 'error'),
@@ -582,9 +507,6 @@ class PULearningExperimentRunner:
             # Extract parameters
             pcm_params = {
                 'num_particles': params['num_particles'],
-                'p_det': params['p_det'],
-                'delta_v': params['delta_v'],
-                'delta_p': params['delta_p'],
                 'movement_strategy': params['movement_strategy'],
                 'initialization_strategy': params['initialization_strategy'],
                 'average_node_potential_threshold': params['avg_node_pot_threshold']
@@ -616,9 +538,6 @@ class PULearningExperimentRunner:
                 result = {
                     'run_id': run_id,
                     'num_particles': params['num_particles'],
-                    'p_det': params['p_det'],
-                    'delta_v': params['delta_v'],
-                    'delta_p': params['delta_p'],
                     'cluster_strategy': params['cluster_strategy'],
                     'positive_cluster_threshold': params['positive_cluster_threshold'],
                     'movement_strategy': params['movement_strategy'],
@@ -639,7 +558,7 @@ class PULearningExperimentRunner:
                 return result
             
             # Evaluate results
-            metrics = self.evaluate_reliable_negatives(
+            metrics = evaluate_reliable_negative_metrics(
                 graph, reliable_negatives
             )
             
@@ -659,9 +578,6 @@ class PULearningExperimentRunner:
             result = {
                 'run_id': run_id,
                 'num_particles': params['num_particles'],
-                'p_det': params['p_det'],
-                'delta_v': params['delta_v'],
-                'delta_p': params['delta_p'],
                 'cluster_strategy': params['cluster_strategy'],
                 'positive_cluster_threshold': params['positive_cluster_threshold'],
                 'movement_strategy': params['movement_strategy'],
@@ -687,9 +603,6 @@ class PULearningExperimentRunner:
             result = {
                 'run_id': run_id,
                 'num_particles': params.get('num_particles', -1),
-                'p_det': params.get('p_det', -1),
-                'delta_v': params.get('delta_v', -1),
-                'delta_p': params.get('delta_p', -1),
                 'cluster_strategy': params.get('cluster_strategy', 'error'),
                 'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
                 'movement_strategy': params.get('movement_strategy', 'error'),
@@ -723,7 +636,7 @@ class PULearningExperimentRunner:
         
         # Also save a summary
         summary = df.groupby([
-            'num_particles', 'p_det', 'delta_v', 'delta_p', 'cluster_strategy',
+            'num_particles', 'cluster_strategy',
             'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
             'avg_node_pot_threshold'
         ]).agg({

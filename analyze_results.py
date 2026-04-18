@@ -63,7 +63,7 @@ class ExperimentResultsAnalyzer:
         
         # Define the expected column names for summary results
         column_names = [
-            'num_particles', 'p_det', 'delta_v', 'delta_p', 'cluster_strategy',
+            'num_particles', 'cluster_strategy',
             'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
             'avg_node_pot_threshold', 'f1_score_mean', 'f1_score_std', 'f1_score_min',
             'f1_score_max', 'precision_mean', 'precision_std', 'recall_mean', 'recall_std',

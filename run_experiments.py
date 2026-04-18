@@ -84,20 +84,6 @@ Examples:
     )
     
     parser.add_argument(
-        '--delta-v',
-        nargs='+',
-        type=float,
-        help='Delta V values to test (e.g., 0.2 0.3 0.4)'
-    )
-    
-    parser.add_argument(
-        '--delta-p',
-        nargs='+',
-        type=float,
-        help='Delta P values to test (e.g., 0.5 0.7 0.8)'
-    )
-    
-    parser.add_argument(
         '--cluster-strategy',
         nargs='+',
         choices=['majority', 'percentage'],
@@ -176,9 +162,6 @@ Examples:
         # Quick test with reduced parameters
         default_params = {
             'num_particles': [100, 200, 387],
-            'p_det': [0.6],  # Fixed as requested
-            'delta_v': [0.4],
-            'delta_p': [0.3],
             'cluster_strategy': ['percentage'],
             'positive_cluster_threshold': [0.01, 0.1, 0.2, 0.3],
             'movement_strategy': ['uniform', 'degree_weighted'],
@@ -189,9 +172,6 @@ Examples:
         # Full parameter ranges
         default_params = {
             'num_particles': [50, 100, 200, 387, 500],
-            'p_det': [0.6],  # Fixed as requested
-            'delta_v': [0.4],
-            'delta_p': [0.3],
             'cluster_strategy': ['percentage'],
             'positive_cluster_threshold': [0.01, 0.1, 0.2, 0.3],
             'movement_strategy': ['uniform', 'degree_weighted'],
@@ -202,10 +182,6 @@ Examples:
     # Override with command line arguments if provided
     if args.num_particles:
         default_params['num_particles'] = args.num_particles
-    if args.delta_v:
-        default_params['delta_v'] = args.delta_v
-    if args.delta_p:
-        default_params['delta_p'] = args.delta_p
     if args.cluster_strategy:
         default_params['cluster_strategy'] = args.cluster_strategy
     if args.positive_cluster_threshold:
@@ -336,7 +312,7 @@ Examples:
                 # Show best parameters
                 best_run = successful_results.loc[successful_results['f1_score'].idxmax()]
                 print(f"  Best parameters: particles={best_run['num_particles']}, "
-                      f"delta_v={best_run['delta_v']}, delta_p={best_run['delta_p']}")
+                      f"strategy={best_run['cluster_strategy']}, threshold={best_run['positive_cluster_threshold']}")
             
         except Exception as e:
             print(f"Error running experiments on {dataset_name}: {e}")

@@ -137,9 +137,6 @@ def run_consistent_experiments(dataset_name: str,
     # Set reduced parameter ranges for demonstration
     runner.set_custom_parameter_ranges({
         'num_particles': [100, 200],
-        'p_det': [0.6],
-        'delta_v': [0.4],
-        'delta_p': [0.3],
         'cluster_strategy': ['percentage'],
         'positive_cluster_threshold': [0.1, 0.2],
         'movement_strategy': ['uniform', 'degree_weighted'],

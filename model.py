@@ -61,12 +61,9 @@ class ParticleCompetitionModel:
     """Main class implementing the particle competition algorithm"""
     
     def __init__(
-        self, 
-        graph: nx.Graph, 
+        self,
+        graph: nx.Graph,
         num_particles: int,
-        p_det: float = 0.6,
-        delta_p: float = 0.4,
-        delta_v: float = 0.3,
         movement_strategy: str = 'uniform' ,
         initialization_strategy: str = 'random',
         average_node_potential_threshold: float = 0.6,
@@ -76,10 +73,10 @@ class ParticleCompetitionModel:
         self.degrees = dict(graph.degree())
         self.neighbors_dict = {node: list(graph.neighbors(node)) for node in graph.nodes}
         self.neighbor_degrees = {}
-        self.num_particles = num_particles        
-        self.p_det = p_det
-        self.delta_p = delta_p
-        self.delta_v = delta_v
+        self.num_particles = num_particles
+        self.p_det = 0.6
+        self.delta_p = 0.4
+        self.delta_v = 0.3
         self.particles: List[Particle] = []        
         self.movement_strategy = movement_strategy
         self.initialization_strategy = initialization_strategy

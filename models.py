@@ -60,12 +60,16 @@ class RCSVM:
         # sum of positive elements
         soma_positive = 0
         for element in self.positives:
-            soma_positive += self.data[element] / torch.norm(self.data[element], p = 2)
-            
+            norm = torch.norm(self.data[element], p=2)
+            if norm > 0:
+                soma_positive += self.data[element] / norm
+
         # sum of unlabeled elements
         soma_unlabeled = 0
         for element in self.unlabeled:
-            soma_unlabeled += self.data[element] / torch.norm(self.data[element], p = 2)
+            norm = torch.norm(self.data[element], p=2)
+            if norm > 0:
+                soma_unlabeled += self.data[element] / norm
 
 
         # representant vectors

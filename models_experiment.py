@@ -16,16 +16,23 @@ from aux import dict_datasets_params_pulpc
 
 def evaluate_f1_score(graph, reliable_negatives, true_label_key='true_label', target_negatives=None):
     """
-    Evaluate F1 score for reliable negatives, handling gaps in node indices and invalid references.
-    
+    Evaluate F1 score for reliable negatives (Step 1 evaluation metric).
+
+    In PU learning's two-step approach, this computes F1 only on the returned set,
+    measuring: "Of the N nodes I returned as reliable negatives, how balanced is
+    my precision/recall trade-off?" Note: recall on the returned set is always 1.0
+    (by definition), so this is primarily precision-driven.
+
+    For purity of the reliable negative set, use evaluate_precision_score() instead.
+
     Args:
         graph: NetworkX graph with node attributes
         reliable_negatives: List of node indices that are predicted as negative
         true_label_key: Key for true labels in node attributes
         target_negatives: Target number of negatives (for reporting purposes)
-    
+
     Returns:
-        F1 score for negative class
+        F1 score (on the returned set only)
     """
     if not reliable_negatives:
         return 0.0
@@ -65,6 +72,86 @@ def evaluate_f1_score(graph, reliable_negatives, true_label_key='true_label', ta
     except Exception as e:
         print(f"  Error in F1 evaluation: {e}")
         return 0.0
+
+def evaluate_precision_score(graph, reliable_negatives, true_label_key='true_label', target_negatives=None):
+    """
+    Evaluate precision for reliable negatives (Step 1 evaluation metric).
+
+    Precision answers: "Of the N nodes I returned as reliable negatives,
+    how many are truly negative?"
+
+    Args:
+        graph: NetworkX graph with node attributes
+        reliable_negatives: List of node indices that are predicted as negative
+        true_label_key: Key for true labels in node attributes
+        target_negatives: Target number of negatives (for reporting purposes)
+
+    Returns:
+        Precision score (0 to 1) for the reliable negative set
+    """
+    if not reliable_negatives:
+        return 0.0
+
+    # Get node attributes dictionary for efficient lookup
+    node_attributes = dict(graph.nodes(data=True))
+
+    # Filter reliable negatives to only include nodes that exist in the graph
+    valid_negatives = [node for node in reliable_negatives if node in graph.nodes()]
+
+    if not valid_negatives:
+        return 0.0
+
+    # Check if we have enough negatives compared to target
+    if target_negatives is not None:
+        actual_negatives = len(valid_negatives)
+        if actual_negatives < target_negatives:
+            return 0.0
+
+    try:
+        # Count how many of the returned negatives are truly negative (true_label == 0)
+        y_true = [node_attributes[node][true_label_key] for node in valid_negatives]
+        num_truly_negative = sum(1 for label in y_true if label == 0)
+
+        # Precision = correctly_identified / total_returned
+        precision = num_truly_negative / len(valid_negatives)
+        return precision
+
+    except KeyError as e:
+        print(f"  Error: Missing attribute '{e}' in node attributes")
+        return 0.0
+    except Exception as e:
+        print(f"  Error in precision evaluation: {e}")
+        return 0.0
+
+def evaluate_reliable_negative_metrics(graph, reliable_negatives, true_label_key='true_label', target_negatives=None):
+    """
+    Compute all evaluation metrics for reliable negatives.
+    Wraps evaluate_f1_score and evaluate_precision_score into a single dict.
+
+    Returns:
+        Dict with f1_score, precision, recall, num_reliable_negatives
+    """
+    if not reliable_negatives:
+        return {'f1_score': 0.0, 'precision': 0.0, 'recall': 0.0, 'num_reliable_negatives': 0}
+
+    f1 = evaluate_f1_score(graph, reliable_negatives, true_label_key, target_negatives)
+    precision = evaluate_precision_score(graph, reliable_negatives, true_label_key, target_negatives)
+
+    node_attributes = dict(graph.nodes(data=True))
+    valid_negatives = [n for n in reliable_negatives if n in graph.nodes()]
+    try:
+        y_true = [node_attributes[n][true_label_key] for n in valid_negatives]
+        y_pred = [0] * len(valid_negatives)
+        rec = recall_score(y_true, y_pred, pos_label=0, zero_division=0)
+    except Exception:
+        rec = 0.0
+
+    return {
+        'f1_score': f1,
+        'precision': precision,
+        'recall': rec,
+        'num_reliable_negatives': len(reliable_negatives)
+    }
 
 def run_models(dataset_name: str, n_samples: int = None, percent_positive: float = 0.1):
     """Run all three models on the same dataset."""
@@ -133,9 +220,6 @@ def run_models(dataset_name: str, n_samples: int = None, percent_positive: float
             num_neg=num_neg,
             pcm_params={
                 'num_particles': 100,
-                'p_det': 0.6,
-                'delta_p': 0.3,
-                'delta_v': 0.4,
                 'movement_strategy': 'uniform',
                 'initialization_strategy': 'random',
                 'average_node_potential_threshold': 0.6
@@ -340,12 +424,7 @@ def run_multiple_experiments(dataset_name: str, n_samples: int = None, percent_p
                     num_neg=num_neg,
                     pcm_params={
                         'num_particles': 100,
-                        'p_det': 0.6,
-                        'delta_p': 0.3,
-                        'delta_v': 0.4,
-                        #'movement_strategy': 'uniform',
                         'movement_strategy': 'degree_weighted',
-
                         'initialization_strategy': 'random',
                         'average_node_potential_threshold': 0.6
                     },

@@ -51,10 +51,7 @@ DATASET_CONFIG = {
 PARAMETER_RANGES = {
     # Particle Competition Model parameters
     'num_particles': [50, 100, 200, 387, 500],
-    'p_det': [0.6],  # Fixed at 0.6 as requested
-    'delta_v': [0.1, 0.2, 0.3, 0.4, 0.5],
-    'delta_p': [0.3, 0.5, 0.7, 0.8, 0.9],
-    
+
     # Reliable Negative Selection parameters
     'cluster_strategy': ['majority', 'percentage'],
     'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
@@ -70,9 +67,6 @@ PARAMETER_RANGES = {
 # ============================================================================
 QUICK_TEST_PARAMS = {
     'num_particles': [100, 200, 387],
-    'p_det': [0.6],
-    'delta_v': [0.2, 0.3, 0.4],
-    'delta_p': [0.5, 0.7, 0.8],
     'cluster_strategy': ['majority', 'percentage'],
     'positive_cluster_threshold': [0.1, 0.3, 0.5],
     'movement_strategy': ['uniform', 'degree_weighted'],

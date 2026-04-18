@@ -38,9 +38,6 @@ def example_2_custom_parameters():
     # Create custom parameter ranges
     custom_params = {
         'num_particles': [100, 200],           # Only test 2 values
-        'p_det': [0.6],                       # Fixed as requested
-        'delta_v': [0.2, 0.4],                # Only test 2 values
-        'delta_p': [0.5, 0.8],                # Only test 2 values
         'cluster_strategy': ['majority'],      # Only test majority
         'positive_cluster_threshold': [0.1, 0.3],  # Only test 2 values
         'movement_strategy': ['uniform'],      # Only test uniform
@@ -117,7 +114,7 @@ def example_4_analyze_results():
             
             # Parameter importance analysis
             print("\nParameter Analysis:")
-            for param in ['num_particles', 'delta_v', 'delta_p', 'cluster_strategy']:
+            for param in ['num_particles', 'cluster_strategy', 'positive_cluster_threshold']:
                 if param in successful.columns:
                     param_values = successful[param].unique()
                     print(f"  {param}: {list(param_values)}")
