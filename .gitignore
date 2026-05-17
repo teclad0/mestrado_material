@@ -1,3 +1,8 @@
+CLAUDE.md
+raw/*
+raw_txt/*
+docs/
+wiki/*
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

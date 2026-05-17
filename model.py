@@ -696,10 +696,61 @@ class PULearningPC:
             return []
         
         reliable_negatives = [node for node, _ in ranked_nodes]
-        
+
         print(f"Identified {len(reliable_negatives)} reliable negatives.")
         return reliable_negatives
-    
+
+    def classify(self, reliable_negatives):
+        '''
+        Phase 2: Harmonic function label propagation on the graph.
+        Uses P (observed positives) and RN as labeled seeds, propagates to all U.
+
+        Parameters:
+        reliable_negatives: node IDs returned by select_reliable_negatives()
+
+        Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+        '''
+        graph = self.graph
+        node_list = sorted(list(graph.nodes()))
+        node_to_idx = {n: i for i, n in enumerate(node_list)}
+        n = len(node_list)
+
+        adj = nx.to_numpy_array(graph, nodelist=node_list, dtype=np.float64)
+
+        rn_idx = {node_to_idx[n] for n in reliable_negatives if n in node_to_idx}
+        pos_idx = {node_to_idx[n] for n in node_list
+                   if graph.nodes[n].get('observed_label') == 1}
+        unlabeled_idx = {node_to_idx[n] for n in node_list
+                         if graph.nodes[n].get('observed_label') == 0}
+
+        labeled = sorted(list(pos_idx | rn_idx))
+        unlabeled = sorted(list(unlabeled_idx - rn_idx))
+
+        if not unlabeled or not labeled:
+            return {node_list[i]: 0 for i in rn_idx}
+
+        f_l = np.array([1.0 if i in pos_idx else 0.0 for i in labeled])
+
+        W_uu = adj[np.ix_(unlabeled, unlabeled)]
+        W_ul = adj[np.ix_(unlabeled, labeled)]
+        D_uu = np.diag(W_uu.sum(axis=1) + W_ul.sum(axis=1))
+        L_uu = D_uu - W_uu
+
+        L_uu += 1e-6 * np.eye(len(unlabeled))
+
+        try:
+            f_u = np.linalg.solve(L_uu, W_ul @ f_l)
+        except np.linalg.LinAlgError:
+            f_u = np.linalg.lstsq(L_uu, W_ul @ f_l, rcond=None)[0]
+
+        predictions = {}
+        for i, idx in enumerate(unlabeled):
+            predictions[node_list[idx]] = 1 if f_u[i] > 0.5 else 0
+        for idx in rn_idx:
+            predictions[node_list[idx]] = 0
+
+        return predictions
 
 
 

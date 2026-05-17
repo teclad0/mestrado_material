@@ -13,8 +13,8 @@ from models import MCLS
 
 
 from generate_dataset import (
-    load_cora_scar, load_citeseer_scar, load_twitch_scar, 
-    load_mnist_scar, load_ionosphere_scar
+    load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
+    load_mnist_scar
 )
 
 class DatasetManager:    
@@ -45,8 +45,8 @@ class DatasetManager:
             graph = load_twitch_scar(**dataset_params)
         elif dataset_name == 'mnist':
             graph = load_mnist_scar(**dataset_params)
-        elif dataset_name == 'ionosphere':
-            graph = load_ionosphere_scar(**dataset_params)
+        elif dataset_name == 'pubmed':
+            graph = load_pubmed_scar(**dataset_params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
         
@@ -158,6 +158,12 @@ def run_experiment(dataset_name: str, n_samples: int = None, percent_positive: f
             'use_original_edges': True,
             'mst': False
         },
+        'pubmed': {
+            'positive_class_label': 2,
+            'percent_positive': 0.1,
+            'use_original_edges': True,
+            'mst': False
+        },
         'twitch': {
             'percent_positive': 0.1,
             'mst': False
@@ -169,7 +175,7 @@ def run_experiment(dataset_name: str, n_samples: int = None, percent_positive: f
             'n_samples': 3000
         }
     }
-    
+
     manager = DatasetManager()
     
     # Generate dataset
@@ -228,7 +234,7 @@ def run_experiment(dataset_name: str, n_samples: int = None, percent_positive: f
 
 def main():
     parser = argparse.ArgumentParser(description="Ultra simple dataset system")
-    parser.add_argument('--dataset', choices=['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere'], 
+    parser.add_argument('--dataset', choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist'],
                        required=True, help='Dataset to generate')
     parser.add_argument('--n-samples', type=int, help='Number of samples to use')
     parser.add_argument('--datasets-dir', default='datasets', help='Directory for datasets')

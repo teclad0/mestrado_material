@@ -295,7 +295,7 @@ Examples:
     
     parser.add_argument(
         '--dataset',
-        choices=['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere'],
+        choices=['cora', 'citeseer', 'twitch', 'mnist'],
         required=True,
         help='Dataset to use for experiments'
     )

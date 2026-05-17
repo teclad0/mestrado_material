@@ -36,7 +36,7 @@ Examples:
         '--dataset', 
         nargs='+', 
         default=['cora'],
-        choices=['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere'],
+        choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist'],
         help='Dataset(s) to run experiments on (default: cora)'
     )
     
@@ -196,6 +196,15 @@ Examples:
     # Create dataset-specific parameter dictionaries
     dataset_kwargs = {}
     
+    # Per-dataset num_neg (how many reliable negatives the model should return)
+    dataset_num_neg = {
+        'cora': 200,
+        'citeseer': 200,
+        'pubmed': 200,
+        'twitch': 200,
+        'mnist': 300
+    }
+
     # Cora dataset parameters
     if 'cora' in args.dataset:
         dataset_kwargs['cora'] = {
@@ -205,7 +214,7 @@ Examples:
             'use_original_edges': args.use_original_edges,
             'mst': args.mst
         }
-    
+
     # CiteSeer dataset parameters
     if 'citeseer' in args.dataset:
         dataset_kwargs['citeseer'] = {
@@ -215,14 +224,24 @@ Examples:
             'use_original_edges': args.use_original_edges,
             'mst': args.mst
         }
-    
+
+    # PubMed dataset parameters
+    if 'pubmed' in args.dataset:
+        dataset_kwargs['pubmed'] = {
+            'k': args.k,
+            'positive_class_label': 2,
+            'percent_positive': args.percent_positive,
+            'use_original_edges': args.use_original_edges,
+            'mst': args.mst
+        }
+
     # Twitch dataset parameters (no 'k' parameter)
     if 'twitch' in args.dataset:
         dataset_kwargs['twitch'] = {
             'percent_positive': args.percent_positive,
             'mst': args.mst
         }
-    
+
     # MNIST dataset parameters
     if 'mnist' in args.dataset:
         dataset_kwargs['mnist'] = {
@@ -231,15 +250,7 @@ Examples:
             'mst': args.mst,
             'n_samples': 3000
         }
-    
-    # Ionosphere dataset parameters
-    if 'ionosphere' in args.dataset:
-        dataset_kwargs['ionosphere'] = {
-            'k': args.k,
-            'percent_positive': args.percent_positive,
-            'mst': args.mst
-        }
-    
+
     print("="*80)
     print("PULearningPC Parametric Experiments")
     print("="*80)
@@ -290,13 +301,16 @@ Examples:
             
             # Get dataset-specific kwargs
             dataset_specific_kwargs = dataset_kwargs.get(dataset_name, {})
-            
+
+            # Use per-dataset num_neg, falling back to CLI arg
+            num_neg = dataset_num_neg.get(dataset_name, args.num_neg)
+
             # Run experiments with parallelization
             results_df = runner.run_experiments(
-                dataset_name, 
-                dataset_specific_kwargs, 
+                dataset_name,
+                dataset_specific_kwargs,
                 n_jobs=args.n_jobs,
-                num_neg=args.num_neg
+                num_neg=num_neg
             )
             all_results[dataset_name] = results_df
             

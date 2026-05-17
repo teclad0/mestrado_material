@@ -27,6 +27,13 @@ def dict_datasets_params_pulpc():
                 },
                 'num_neg': 200
             },
+            'pubmed': {
+                'rns_params': {
+                    'cluster_strategy': 'percentage',
+                    'positive_cluster_threshold': 0.1
+                },
+                'num_neg': 200
+            },
             'mnist': {
                 'rns_params': {
                     'cluster_strategy': 'percentage',

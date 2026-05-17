@@ -25,7 +25,7 @@ from torch_geometric.data import Data
 
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_twitch_scar, 
-    load_mnist_scar, load_ionosphere_scar
+    load_mnist_scar
 )
 
 class DatasetGenerator:
@@ -78,8 +78,6 @@ class DatasetGenerator:
             graph = load_twitch_scar(**dataset_params)
         elif dataset_name == 'mnist':
             graph = load_mnist_scar(**dataset_params)
-        elif dataset_name == 'ionosphere':
-            graph = load_ionosphere_scar(**dataset_params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
         
@@ -255,7 +253,7 @@ def main():
     
     parser.add_argument(
         '--dataset',
-        choices=['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere', 'all'],
+        choices=['cora', 'citeseer', 'twitch', 'mnist', 'all'],
         default='all',
         help='Dataset(s) to generate (default: all)'
     )
@@ -332,11 +330,6 @@ def main():
                 'percent_positive': args.percent_positive,
                 'mst': False,
                 'n_samples': 3000
-            },
-            'ionosphere': {
-                'k': 3,
-                'percent_positive': args.percent_positive,
-                'mst': False
             }
         }
         

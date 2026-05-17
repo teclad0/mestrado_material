@@ -188,6 +188,18 @@ def load_citeseer_scar(
     return _load_planetoid_dataset("CiteSeer", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, data_dir)
 
 
+def load_pubmed_scar(
+    positive_class_label: int,
+    percent_positive: float,
+    use_original_edges: bool = True,
+    k: int = 10,
+    mst: bool = True,
+    n_samples: int = None,
+    data_dir: str = '/tmp/PubMed'
+) -> nx.Graph:
+    return _load_planetoid_dataset("PubMed", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, data_dir)
+
+
 def load_twitch_scar(
     percent_positive: float,
     mst: bool = False,
@@ -344,69 +356,6 @@ def load_mnist_scar(
     return G
 
 
-def load_ionosphere_scar(
-    percent_positive: float,
-    k: int = 10,
-    mst: bool = True,
-    n_samples: int = None,
-    stratified_sampling: bool = True
-) -> nx.Graph:
-    print("Loading Ionosphere dataset...")
-    url = 'https://archive.ics.uci.edu/ml/machine-learning-databases/ionosphere/ionosphere.data'
-    df = pd.read_csv(url, header=None)
-    
-    features = df.iloc[:, :-1].values
-    labels_str = df.iloc[:, -1].values
-    
-    le = LabelEncoder()
-    labels = le.fit_transform(labels_str)
-
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
-    
-    G = build_knn_graph_from_features(features_scaled, k=k)
-    
-    if not nx.is_connected(G):
-        G = _handle_graph_connectivity(G, mst=mst, features=features_scaled)
-    
-    connected_nodes = sorted(list(G.nodes()))
-
-    if n_samples and n_samples < len(connected_nodes):
-        lcc_features = features[connected_nodes]
-        lcc_labels = labels[connected_nodes]
-        if stratified_sampling:
-            print(f"Sampling {n_samples} nodes with stratified sampling from the largest component...")
-            sample_indices_in_lcc = _stratified_sample(lcc_features, lcc_labels, n_samples)
-            sampled_node_ids = [connected_nodes[i] for i in sample_indices_in_lcc]
-        else:
-            print(f"Sampling the first {n_samples} nodes from the largest component...")
-            sampled_node_ids = connected_nodes[:n_samples]
-        
-        G = G.subgraph(sampled_node_ids).copy()
-
-    final_node_ids = sorted(list(G.nodes()))
-
-    final_features = features[final_node_ids]
-    final_labels = labels[final_node_ids]
-
-    positive_class_label = le.transform(['g'])[0]
-    final_labels_binary = binarize_labels(final_labels, positive_class_label)
-    final_observed_labels = apply_scar_labeling(final_labels_binary, percent_positive)
-    
-    final_features_scaled = scaler.fit_transform(final_features)
-
-    node_attributes = {
-        node_id: {
-            'features': final_features_scaled[i],
-            'true_label': final_labels_binary[i],
-            'observed_label': final_observed_labels[i]
-        }
-        for i, node_id in enumerate(final_node_ids)
-    }
-    nx.set_node_attributes(G, node_attributes)
-    
-    print(f"Ionosphere graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
-    return G
 
 
 # --- Example Usage ---

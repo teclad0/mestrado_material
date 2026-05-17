@@ -4,6 +4,7 @@ import numpy as np
 import random
 import json
 import os
+import time
 from typing import Dict, List, Any, Tuple
 from itertools import product
 from tqdm import tqdm
@@ -15,8 +16,8 @@ warnings.filterwarnings('ignore')
 
 from model import PULearningPC
 from generate_dataset import (
-    load_cora_scar, load_citeseer_scar, load_twitch_scar, 
-    load_mnist_scar, load_ionosphere_scar
+    load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
+    load_mnist_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
 from models_experiment import evaluate_reliable_negative_metrics
@@ -164,28 +165,29 @@ class PULearningExperimentRunner:
                 'percent_positive': 0.1,
                 'mst': False
             },
-            'ionosphere': {
+            'pubmed': {
+                'positive_class_label': 2,
                 'percent_positive': 0.1,
-                'k': 3,
+                'use_original_edges': True,
                 'mst': False
-            }
+            },
         }
-        
+
         # Update with provided kwargs
         params = default_params.get(dataset_name, {}).copy()
         params.update(kwargs)
-        
+
         # Load dataset
         if dataset_name == 'cora':
             return load_cora_scar(**params)
         elif dataset_name == 'citeseer':
             return load_citeseer_scar(**params)
+        elif dataset_name == 'pubmed':
+            return load_pubmed_scar(**params)
         elif dataset_name == 'twitch':
             return load_twitch_scar(**params)
         elif dataset_name == 'mnist':
             return load_mnist_scar(**params)
-        elif dataset_name == 'ionosphere':
-            return load_ionosphere_scar(**params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     
@@ -386,71 +388,91 @@ class PULearningExperimentRunner:
         
         return df
     
-    def _run_experiments_parallel(self, 
-                                 graph: nx.Graph, 
-                                 param_combinations: List[Dict[str, Any]], 
+    @staticmethod
+    def _format_params_short(params: Dict[str, Any]) -> str:
+        """Format parameters as a compact string for logging."""
+        return (f"p={params['num_particles']}, "
+                f"strat={params['cluster_strategy']}, "
+                f"thresh={params['positive_cluster_threshold']}, "
+                f"mov={params['movement_strategy']}, "
+                f"init={params['initialization_strategy']}, "
+                f"avg_thresh={params['avg_node_pot_threshold']}")
+
+    def _run_experiments_parallel(self,
+                                 graph: nx.Graph,
+                                 param_combinations: List[Dict[str, Any]],
                                  n_jobs: int,
                                  num_neg: int,
                                  dataset_name: str) -> List[Dict[str, Any]]:
         """
         Run experiments in parallel using multiprocessing.
-        
-        Args:
-            graph: NetworkX graph to use
-            param_combinations: List of parameter dictionaries
-            n_jobs: Number of parallel jobs
-            num_neg: Number of reliable negatives to select
-            
-        Returns:
-            List of experiment results
         """
-        # Prepare all experiment tasks
         all_tasks = []
         for i, params in enumerate(param_combinations):
             for run_id in range(self.n_runs):
                 all_tasks.append((params, run_id, i))
-        
+
         total_tasks = len(all_tasks)
         print(f"Total tasks to process: {total_tasks}")
-        
-        # Create a partial function with the graph and num_neg
+
         run_single_experiment_partial = partial(self._run_single_experiment_worker, graph, num_neg)
-        
+
         results = []
         completed = 0
-        
-        # Use ProcessPoolExecutor for parallel execution
+
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-            # Submit all tasks
-            future_to_task = {
-                executor.submit(run_single_experiment_partial, params, run_id, task_idx): (params, run_id, task_idx)
-                for task_idx, (params, run_id, i) in enumerate(all_tasks)
-            }
-            
-            # Process completed tasks with progress bar
+            future_to_task = {}
+            submit_times = {}
+
+            for task_idx, (params, run_id, i) in enumerate(all_tasks):
+                future = executor.submit(run_single_experiment_partial, params, run_id, task_idx)
+                future_to_task[future] = (params, run_id, task_idx)
+                submit_times[future] = time.time()
+
             with tqdm(total=total_tasks, desc="Running experiments") as pbar:
                 for future in as_completed(future_to_task):
+                    params, run_id, task_idx = future_to_task[future]
+                    elapsed = time.time() - submit_times[future]
+
                     try:
                         result = future.result()
                         results.append(result)
                         completed += 1
-                        
-                        # Update progress bar
                         pbar.update(1)
-                        
-                        # Print progress with iteration info if available
-                        if 'final_iteration_count' in result and result['final_iteration_count'] > 0:
-                            print(f"  Completed {completed}/{total_tasks}: {result['final_iteration_count']} iterations, "
-                                  f"F1: {result['f1_score']:.3f}, Coverage: {result['coverage']:.3f}")
-                        
-                        # Save intermediate results every 50 experiments
+
+                        param_str = self._format_params_short(params)
+                        status = result.get('status', 'unknown')
+                        iters = result.get('final_iteration_count', 0)
+                        f1 = result.get('f1_score', 0.0)
+
+                        tqdm.write(
+                            f"  [{completed}/{total_tasks}] DONE in {elapsed:.1f}s | "
+                            f"{dataset_name} | run={run_id} | {param_str} | "
+                            f"iters={iters}, F1={f1:.3f}, Prec={result.get('precision', 0.0):.3f}, status={status}"
+                        )
+
+                        # Show in-flight tasks sorted by elapsed time
+                        in_flight = []
+                        now = time.time()
+                        for f, (p, r, _) in future_to_task.items():
+                            if not f.done():
+                                in_flight.append((now - submit_times[f], p, r))
+
+                        if in_flight:
+                            in_flight.sort(reverse=True, key=lambda x: x[0])
+                            n_show = min(3, len(in_flight))
+                            tqdm.write(f"  >> {len(in_flight)} tasks in-flight ({dataset_name}). Longest running:")
+                            for rank, (t, p, r) in enumerate(in_flight[:n_show], 1):
+                                tqdm.write(
+                                    f"     {rank}. {t:.0f}s elapsed | run={r} | "
+                                    f"{self._format_params_short(p)}"
+                                )
+
                         if completed % 50 == 0:
                             self.save_intermediate_results(results, f"{dataset_name}_intermediate")
-                        
+
                     except Exception as e:
-                        print(f"Error in parallel execution: {e}")
-                        # Add error result
-                        params, run_id, task_idx = future_to_task[future]
+                        tqdm.write(f"  ERROR for task {task_idx} after {elapsed:.1f}s: {e}")
                         error_result = {
                             'run_id': run_id,
                             'num_particles': params.get('num_particles', -1),
@@ -474,7 +496,7 @@ class PULearningExperimentRunner:
                         results.append(error_result)
                         completed += 1
                         pbar.update(1)
-        
+
         return results
     
     def _run_single_experiment_worker(self, 
@@ -664,7 +686,7 @@ class PULearningExperimentRunner:
     
     def run_all_datasets(self):
         """Run experiments on all available datasets."""
-        datasets = ['cora', 'citeseer', 'twitch', 'mnist', 'ionosphere']
+        datasets = ['cora', 'citeseer', 'twitch', 'mnist']
         
         all_results = {}
         for dataset in datasets:

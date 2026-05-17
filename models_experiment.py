@@ -153,6 +153,40 @@ def evaluate_reliable_negative_metrics(graph, reliable_negatives, true_label_key
         'num_reliable_negatives': len(reliable_negatives)
     }
 
+def evaluate_phase2(graph, predictions, true_label_key='true_label'):
+    """
+    Evaluate Phase 2 classification on ALL unlabeled nodes.
+
+    Args:
+        graph: NetworkX graph with true labels
+        predictions: dict {node_id: predicted_label} for unlabeled nodes
+        true_label_key: key for true labels in node attributes
+
+    Returns:
+        dict with f1, precision, recall, accuracy
+    """
+    if not predictions:
+        return {'f1': 0.0, 'precision': 0.0, 'recall': 0.0, 'accuracy': 0.0}
+
+    node_attributes = dict(graph.nodes(data=True))
+
+    y_true = []
+    y_pred = []
+    for node_id, pred_label in predictions.items():
+        if node_id in node_attributes:
+            y_true.append(node_attributes[node_id][true_label_key])
+            y_pred.append(pred_label)
+
+    if not y_true:
+        return {'f1': 0.0, 'precision': 0.0, 'recall': 0.0, 'accuracy': 0.0}
+
+    return {
+        'f1': f1_score(y_true, y_pred, average='binary', zero_division=0),
+        'precision': precision_score(y_true, y_pred, average='binary', zero_division=0),
+        'recall': recall_score(y_true, y_pred, average='binary', zero_division=0),
+        'accuracy': sum(1 for t, p in zip(y_true, y_pred) if t == p) / len(y_true)
+    }
+
 def run_models(dataset_name: str, n_samples: int = None, percent_positive: float = 0.1):
     """Run all three models on the same dataset."""
     
@@ -388,13 +422,18 @@ def run_multiple_experiments(dataset_name: str, n_samples: int = None, percent_p
                 'twitch': {
                     'mst': False
                 },
+                'pubmed': {
+                    'positive_class_label': 2,
+                    'use_original_edges': True,
+                    'mst': False
+                },
                 'mnist': {
                     'k': 3,
                     'mst': False,
                     'n_samples': 3000
                 }
             }
-            
+
             params = dataset_gen_params.get(dataset_name, {})
             # Generate dataset with run_number - this will create the appropriate filename
             filename = manager.generate_and_save_dataset(dataset_name, params, n_samples, percent_pos, run_number=run)

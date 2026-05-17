@@ -31,6 +31,12 @@ DATASET_CONFIG = {
         'use_original_edges': True,
         'mst': False
     },
+    'pubmed': {
+        'positive_class_label': 2,
+        'percent_positive': 0.1,
+        'use_original_edges': True,
+        'mst': False
+    },
     'twitch': {
         'percent_positive': 0.1,
         'mst': False
@@ -38,10 +44,28 @@ DATASET_CONFIG = {
     'mnist': {
         'k': 3,
         'percent_positive': 0.1
+    }
+}
+
+# ============================================================================
+# BASELINE MODELS CONFIGURATION
+# ============================================================================
+BASELINE_CONFIG = {
+    'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'pubmed'],
+    'percent_positive': [0.01, 0.25],
+    'num_neg': {
+        'cora': 200,
+        'citeseer': 200,
+        'mnist': 300,
+        'twitch': 200,
+        'pubmed': 200,
     },
-    'ionosphere': {
-        'percent_positive': 0.1,
-        'k': 3
+    'models': {
+        'RCSVM': {'alpha': 0.7, 'beta': 0.3},
+        'CCRNE': {'ratio': 0.3},
+        'PU_LP': {'alpha': 0.1, 'm': 3, 'l': 1},
+        'MCLS': {'k': 7, 'ratio': 0.1},
+        'LP_PUL': {},
     }
 }
 

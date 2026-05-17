@@ -1,6 +1,83 @@
-# Command Line Usage Examples for PULearningPC Experiments
+# Command Line Usage Examples
 
-This document shows how to use the `run_experiments.py` script to run parametric experiments from the command line.
+This document shows how to run experiments from the command line.
+
+---
+
+## Baseline Models (`run_baselines.py`)
+
+Runs all baseline PU Learning models (RCSVM, CCRNE, PU_LP, MCLS, LP_PUL) with Phase 1 (reliable negative extraction) and Phase 2 (full classification).
+
+### Basic Usage
+
+```bash
+# All models, all datasets, both percents (1% and 25% positive labeling)
+python run_baselines.py
+
+# Single dataset
+python run_baselines.py --dataset cora
+
+# Single model
+python run_baselines.py --model RCSVM
+
+# Single percent
+python run_baselines.py --percent 0.25
+
+# Combine filters
+python run_baselines.py --dataset cora --model PU_LP --percent 0.01
+
+# Custom output
+python run_baselines.py --output my_results.csv
+```
+
+### Configuration
+
+All baseline parameters are centralized in `experiment_config.py` under `BASELINE_CONFIG`:
+
+```python
+BASELINE_CONFIG = {
+    'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'pubmed'],
+    'percent_positive': [0.01, 0.25],
+    'num_neg': {'cora': 200, 'citeseer': 200, 'mnist': 300, 'twitch': 200, 'pubmed': 200},
+    'models': {
+        'RCSVM': {'alpha': 0.7, 'beta': 0.3},
+        'CCRNE': {'ratio': 0.3},
+        'PU_LP': {'alpha': 0.1, 'm': 3, 'l': 1},
+        'MCLS': {'k': 7, 'ratio': 0.1},
+        'LP_PUL': {},
+    }
+}
+```
+
+### Output
+
+Results are saved as CSV with columns:
+- `model`, `dataset`, `percent_positive`
+- Phase 1: `phase1_f1`, `phase1_precision`, `phase1_num_rn`, `phase1_time_s`
+- Phase 2: `phase2_f1`, `phase2_precision`, `phase2_recall`, `phase2_accuracy`, `phase2_time_s`
+
+### Available Models
+
+| Model | Phase 1 (RN extraction) | Phase 2 (Classification) |
+|-------|------------------------|--------------------------|
+| RCSVM | Cosine-similarity representant vectors | Iterative SVM expansion |
+| CCRNE | Clustering with radius threshold | Weighted Voting SVM |
+| PU_LP | Katz similarity (sparse solve) | Label Propagation |
+| MCLS | KMeans + cluster labeling | Iterative LS-SVM |
+| LP_PUL | BFS distance from positives | Harmonic function propagation |
+
+### Notes
+
+- Datasets must exist in `datasets/` as pickle files (e.g., `cora_full_1pct.pkl`)
+- Generate missing datasets with: `python dataset_system.py --dataset <name>`
+- PU_LP uses sparse linear solve — works on PubMed (19717 nodes) without memory issues
+- CCRNE/RCSVM Phase 2 uses iterative SVMs — slower on large datasets (~60-80s on Cora)
+
+---
+
+## PULearningPC Parametric Experiments (`run_experiments.py`)
+
+This runs parametric grid search over the CP-APNR (PULearningPC) hyperparameters.
 
 ## 🚀 Basic Usage
 
@@ -31,17 +108,12 @@ python run_experiments.py --dataset cora --quick-test
 python run_experiments.py --dataset cora --num-particles 100 200 387
 ```
 
-### 2. Test specific delta values
-```bash
-python run_experiments.py --dataset cora --delta-v 0.2 0.3 0.4 --delta-p 0.5 0.7 0.8
-```
-
-### 3. Test specific cluster strategies
+### 2. Test specific cluster strategies
 ```bash
 python run_experiments.py --dataset cora --cluster-strategy majority percentage
 ```
 
-### 4. Test specific thresholds
+### 3. Test specific thresholds
 ```bash
 python run_experiments.py --dataset cora --positive-cluster-threshold 0.01 0.1 0.3
 ```
@@ -68,7 +140,6 @@ python run_experiments.py --dataset cora --k 5 --percent-positive 0.2
 python run_experiments.py \
   --dataset cora citeseer \
   --num-particles 100 200 387 \
-  --delta-v 0.2 0.3 0.4 \
   --cluster-strategy percentage \
   --n-runs 5 \
   --output-dir comprehensive_results \
@@ -121,8 +192,6 @@ python run_experiments.py --dataset cora --num-particles 180 190 200 210
 python run_experiments.py \
   --dataset cora citeseer twitch \
   --num-particles 100 200 387 \
-  --delta-v 0.3 \
-  --delta-p 0.4 \
   --n-runs 3
 ```
 
@@ -136,8 +205,6 @@ python run_experiments.py \
 | `--random-seed` | Random seed | `42` |
 | `--quick-test` | Use reduced parameters | `False` |
 | `--num-particles` | Number of particles | `[50, 100, 200, 387, 500]` |
-| `--delta-v` | Velocity decay | `[0.1, 0.2, 0.3, 0.4, 0.5]` |
-| `--delta-p` | Potential decay | `[0.3, 0.5, 0.7, 0.8, 0.9]` |
 | `--cluster-strategy` | Cluster labeling | `[majority, percentage]` |
 | `--positive-cluster-threshold` | Positive threshold | `[0.01, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.5, 0.7, 0.9]` |
 | `--movement-strategy` | Particle movement | `[uniform, degree_weighted]` |
@@ -146,7 +213,7 @@ python run_experiments.py \
 
 ## ⚠️ Important Notes
 
-1. **`p_det` is fixed at 0.6** as requested in your requirements
+1. **`p_det`, `delta_v`, and `delta_p` are fixed constants** (0.6, 0.3, 0.4) hardcoded in the model
 2. **Coverage is automatically tracked** and included in all results
 3. **Intermediate results are saved** every 10 experiments to prevent data loss
 4. **Error handling** continues experiments even if some fail

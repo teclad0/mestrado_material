@@ -10,7 +10,8 @@ import torch
 from torch_geometric.nn import GCNConv
 import torch.nn.functional as F
 import torch.nn
-from sklearn.svm import OneClassSVM
+from sklearn.svm import OneClassSVM, SVC
+from sklearn.semi_supervised import LabelPropagation
 from sklearn.neighbors import kneighbors_graph
 import scipy.sparse as sp
 
@@ -29,6 +30,7 @@ class RCSVM:
         if isinstance(data, nx.Graph):
             node_list = sorted(list(data.nodes()))
             self._idx_to_node = node_list
+            self._node_to_idx = {node: idx for idx, node in enumerate(node_list)}
             features = np.array([data.nodes[node]['features'] for node in node_list])
             observed = np.array([data.nodes[node]['observed_label'] for node in node_list])
             self.data = torch.tensor(features, dtype=torch.float)
@@ -37,6 +39,7 @@ class RCSVM:
 
         else:
             self._idx_to_node = None
+            self._node_to_idx = None
             self.data = data.x
             self.positives = _to_long_tensor(data.P)
             self.unlabeled = _to_long_tensor(data.U)
@@ -52,6 +55,12 @@ class RCSVM:
         if all(isinstance(x, (int, np.integer)) for x in mapped):
             return torch.tensor(mapped, dtype=torch.long)
         return mapped
+
+    def _to_internal_indices(self, node_ids):
+        """Map original node IDs back to internal contiguous indices."""
+        if self._node_to_idx is None:
+            return [int(x) for x in node_ids]
+        return [self._node_to_idx[int(n)] for n in node_ids]
 
     def train(self):
         '''
@@ -104,8 +113,62 @@ class RCSVM:
         result = torch.tensor(RN, dtype=torch.long)
         return self._restore_original_node_ids(result)
 
+    def classify(self, reliable_negatives, max_iter=15, threshold=0.5):
+        '''
+        Phase 2: Iterative SVM classification (Li & Liu, 2003).
+        Trains SVM on P + RN, iteratively adds high-confidence negatives,
+        then classifies all remaining unlabeled nodes.
 
-    
+        Parameters:
+        reliable_negatives: node IDs returned by negative_inference()
+        max_iter (int): maximum SVM iterations
+        threshold (float): decision function threshold for adding negatives
+
+        Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+        '''
+        rn_internal = set(self._to_internal_indices(reliable_negatives))
+        pos_set = set(self.positives.tolist())
+        all_unlabeled = set(self.unlabeled.tolist())
+
+        if len(rn_internal) < 2:
+            return {(self._idx_to_node[i] if self._idx_to_node else i): 1
+                    for i in all_unlabeled}
+
+        svm = None
+        for _ in range(max_iter):
+            train_idx = list(pos_set) + list(rn_internal)
+            train_X = self.data[train_idx].numpy()
+            train_y = np.array([1] * len(pos_set) + [0] * len(rn_internal))
+
+            svm = SVC(kernel='rbf', class_weight='balanced')
+            svm.fit(train_X, train_y)
+
+            remaining = list(all_unlabeled - rn_internal)
+            if not remaining:
+                break
+
+            decisions = svm.decision_function(self.data[remaining].numpy())
+            new_neg = [remaining[i] for i, d in enumerate(decisions) if d < -threshold]
+            if not new_neg:
+                break
+            rn_internal.update(new_neg)
+
+        predictions = {}
+        for idx in rn_internal:
+            orig = self._idx_to_node[idx] if self._idx_to_node else idx
+            predictions[orig] = 0
+
+        remaining = list(all_unlabeled - rn_internal)
+        if remaining and svm is not None:
+            pred = svm.predict(self.data[remaining].numpy())
+            for idx, label in zip(remaining, pred):
+                orig = self._idx_to_node[idx] if self._idx_to_node else idx
+                predictions[orig] = int(label)
+
+        return predictions
+
+
 def phy(m):
     '''
     Function to compute phy value of CCRNE algorithm
@@ -146,6 +209,7 @@ class CCRNE:
         if isinstance(data, nx.Graph):
             node_list = sorted(list(data.nodes()))
             self._idx_to_node = node_list
+            self._node_to_idx = {node: idx for idx, node in enumerate(node_list)}
             features = np.array([data.nodes[node]['features'] for node in node_list])
             observed = np.array([data.nodes[node]['observed_label'] for node in node_list])
             self.data = torch.tensor(features, dtype=torch.float)
@@ -153,6 +217,7 @@ class CCRNE:
             self.unlabeled = torch.tensor(np.where(observed == 0)[0], dtype=torch.long)
         else:
             self._idx_to_node = None
+            self._node_to_idx = None
             self.data = data.x
             self.positives = _to_long_tensor(data.P)
             self.unlabeled = _to_long_tensor(data.U)
@@ -168,6 +233,12 @@ class CCRNE:
         if all(isinstance(x, (int, np.integer)) for x in mapped):
             return torch.tensor(mapped, dtype=torch.long)
         return mapped
+
+    def _to_internal_indices(self, node_ids):
+        """Map original node IDs back to internal contiguous indices."""
+        if self._node_to_idx is None:
+            return [int(x) for x in node_ids]
+        return [self._node_to_idx[int(n)] for n in node_ids]
 
     def train(self):
         '''
@@ -236,6 +307,73 @@ class CCRNE:
                         RN = RN[RN != x_i]
         return self._restore_original_node_ids(RN[:num_neg])
 
+    def classify(self, reliable_negatives, max_iter=10, threshold=0.5):
+        '''
+        Phase 2: Weighted Voting SVM (Liu & Peng, 2014).
+        Iteratively trains SVMs expanding the negative set each round.
+        Each SVM becomes a voter weighted by its training accuracy.
+        Final classification uses weighted majority voting across all SVMs.
+
+        Parameters:
+        reliable_negatives: node IDs returned by negative_inference()
+        max_iter (int): maximum number of SVM iterations
+        threshold (float): decision function threshold for adding negatives
+
+        Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+        '''
+        rn_internal = set(self._to_internal_indices(reliable_negatives))
+        pos_set = set(self.positives.tolist())
+        all_unlabeled = set(self.unlabeled.tolist())
+
+        if len(rn_internal) < 2:
+            return {(self._idx_to_node[i] if self._idx_to_node else i): 1
+                    for i in all_unlabeled}
+
+        features = self.data.numpy() if hasattr(self.data, 'numpy') else np.array(self.data)
+
+        classifiers = []
+        weights = []
+        current_rn = set(rn_internal)
+
+        for _ in range(max_iter):
+            train_idx = list(pos_set) + list(current_rn)
+            train_X = features[train_idx]
+            train_y = np.array([1] * len(pos_set) + [0] * len(current_rn))
+
+            svm = SVC(kernel='rbf', class_weight='balanced', probability=True)
+            svm.fit(train_X, train_y)
+
+            train_acc = svm.score(train_X, train_y)
+            classifiers.append(svm)
+            weights.append(train_acc)
+
+            remaining = list(all_unlabeled - current_rn)
+            if not remaining:
+                break
+
+            decisions = svm.decision_function(features[remaining])
+            new_neg = [remaining[i] for i, d in enumerate(decisions) if d < -threshold]
+            if not new_neg:
+                break
+            current_rn.update(new_neg)
+
+        # Weighted voting across all trained classifiers
+        all_unlabeled_list = sorted(list(all_unlabeled))
+        vote_scores = np.zeros(len(all_unlabeled_list))
+
+        total_weight = sum(weights)
+        for svm, w in zip(classifiers, weights):
+            pred = svm.predict(features[all_unlabeled_list])
+            vote_scores += (w / total_weight) * pred
+
+        predictions = {}
+        for i, idx in enumerate(all_unlabeled_list):
+            orig = self._idx_to_node[idx] if self._idx_to_node else idx
+            predictions[orig] = 1 if vote_scores[i] >= 0.5 else 0
+
+        return predictions
+
 
 def _to_long_tensor(indices):
     """Convert list/array/tensor indices to a 1-D long tensor."""
@@ -263,12 +401,15 @@ def _prepare_pu_lp_input(data):
     Normalize PU_LP input from either:
     - PyG Data (with x, edge_index, P, U)
     - NetworkX graph (with node attribute 'observed_label')
+
+    Returns sparse adjacency matrix for memory-efficient Katz computation.
     """
     # Case 1: NetworkX graph
     if isinstance(data, nx.Graph):
         node_list = sorted(list(data.nodes()))
         node_to_idx = {node: idx for idx, node in enumerate(node_list)}
-        adj = nx.to_numpy_array(data, nodelist=node_list, dtype=np.float64)
+        adj = nx.to_scipy_sparse_array(data, nodelist=node_list, dtype=np.float64)
+        features = np.array([data.nodes[node]['features'] for node in node_list])
 
         observed = []
         for node in node_list:
@@ -279,22 +420,31 @@ def _prepare_pu_lp_input(data):
         observed = np.array(observed)
         positives = torch.tensor(np.where(observed == 1)[0], dtype=torch.long)
         unlabeled = torch.tensor(np.where(observed == 0)[0], dtype=torch.long)
-        return adj, positives, unlabeled, node_list, node_to_idx
+        return adj, features, positives, unlabeled, node_list, node_to_idx
 
     # Case 2: PyG-like Data
     if not hasattr(data, "edge_index") or not hasattr(data, "x"):
         raise ValueError("PU_LP input must be a NetworkX graph or PyG Data with edge_index/x.")
-    adj = _edge_index_to_dense_adjacency(data.edge_index, data.x.shape[0])
+    num_nodes = data.x.shape[0]
+    edge_index = data.edge_index
+    if edge_index is not None and edge_index.numel() > 0:
+        src = edge_index[0].numpy()
+        dst = edge_index[1].numpy()
+        adj = sp.csc_matrix((np.ones(len(src)), (src, dst)), shape=(num_nodes, num_nodes), dtype=np.float64)
+        adj = (adj + adj.T).minimum(sp.csc_matrix(np.ones((num_nodes, num_nodes))))
+    else:
+        adj = sp.csc_matrix((num_nodes, num_nodes), dtype=np.float64)
+    features = data.x.numpy() if hasattr(data.x, 'numpy') else np.array(data.x)
     positives = _to_long_tensor(data.P)
     unlabeled = _to_long_tensor(data.U)
-    return adj, positives, unlabeled, None, None
+    return adj, features, positives, unlabeled, None, None
 
 class PU_LP:
     '''
     Class to implement the PU_LP algorithm
     '''
     def __init__(self, data, alpha=0.1, m = 3, l = 1):
-        self.data_graph, self.positives, self.unlabeled, self._idx_to_node, self._node_to_idx = _prepare_pu_lp_input(data)
+        self.data_graph, self.features, self.positives, self.unlabeled, self._idx_to_node, self._node_to_idx = _prepare_pu_lp_input(data)
         self.alpha = alpha
         self.m = m
         self.l = l
@@ -308,6 +458,20 @@ class PU_LP:
             return torch.tensor(mapped, dtype=torch.long)
         return mapped
         
+    def _katz_scores(self, seed_indices):
+        """
+        Compute Katz similarity scores from all nodes to a set of seed nodes.
+        Uses sparse linear solve: (I - alpha*A) @ x = e_seeds, then W @ e_seeds = x - e_seeds.
+        This avoids the full N×N matrix inversion (O(N³) → O(nnz) sparse solve).
+        """
+        from scipy.sparse.linalg import spsolve
+        n = self.data_graph.shape[0]
+        M = sp.eye(n, format='csc') - self.alpha * sp.csc_matrix(self.data_graph)
+        e_seeds = np.zeros(n)
+        e_seeds[seed_indices] = 1.0
+        x = spsolve(M, e_seeds)
+        return (x - e_seeds) / len(seed_indices)
+
     def train(self):
         '''
         Method to train the model
@@ -315,52 +479,32 @@ class PU_LP:
         Main changes: Considering the fact that the model automatically returns the number of reliable negative elements, we change the number of elements to be returned. This action is justified by the fact that the benchmark needs to be more fair possible.
         '''
 
-        # Setting the dinamic parameters
         self.RP = torch.tensor([], dtype=torch.long)
         P_line = self.positives.clone()
         U_line = self.unlabeled.clone()
 
-        # Computing W = (I - alpha*A)**-1 - I
-        I = np.eye(len(self.data_graph))
-        W = np.linalg.inv(I - self.alpha * self.data_graph) - I
-        W = torch.tensor(W, dtype=torch.float64)
-
-        # Ranking the most similar elements based on the selected positives
         for k in range(self.m):
-            rank_dict = dict()
-            for vi in U_line.tolist():
-                S_vi = 0
-                for vj in P_line.tolist():
-                    S_vi += W[vi, vj]
-                S_vi /= len(P_line)
-                rank_dict[vi] = S_vi
-            rank_dict = sorted(rank_dict.items(), key=lambda x:x[1], reverse=True)
-            rank_dict = [tupla[0] for tupla in rank_dict]
+            S = self._katz_scores(P_line.numpy())
 
-            # Updating sets each iteration
+            U_scores = [(vi.item(), S[vi.item()]) for vi in U_line]
+            U_scores.sort(key=lambda x: x[1], reverse=True)
+
             num_to_promote = int((self.l / self.m) * len(self.positives))
             if num_to_promote <= 0:
                 continue
-            RP_line = torch.tensor(rank_dict[:num_to_promote], dtype=torch.long)
+            RP_line = torch.tensor([x[0] for x in U_scores[:num_to_promote]], dtype=torch.long)
             if RP_line.numel() == 0:
                 continue
             P_line = torch.cat([P_line, RP_line], dim=0)
             U_line = torch.tensor(list(set(U_line.tolist()) - set(RP_line.tolist())), dtype=torch.long)
             self.RP = torch.cat([self.RP, RP_line], dim=0)
 
-        # Classifying the reliable negatives
-        rank_dict = dict()
         current_pos = torch.cat([self.positives, self.RP], dim=0)
+        S_final = self._katz_scores(current_pos.numpy())
+
         remaining_unlabeled = list(set(self.unlabeled.tolist()) - set(self.RP.tolist()))
-        for vi in remaining_unlabeled:
-            S_vi = 0
-            for vj in current_pos.tolist():
-                S_vi += W[vi, int(vj)]
-            S_vi /= len(P_line)
-            rank_dict[vi] = S_vi
-        rank_dict = sorted(rank_dict.items(), key=lambda x:x[1])
-        rank_dict = [tupla[0] for tupla in rank_dict]
-        self.RN = torch.tensor(rank_dict, dtype=torch.long)
+        rank = sorted(remaining_unlabeled, key=lambda vi: S_final[vi])
+        self.RN = torch.tensor(rank, dtype=torch.long)
 
     def negative_inference(self, num_neg = None):
         '''
@@ -386,6 +530,44 @@ class PU_LP:
         Method that returns the positive elements (computed at the training phase)
         '''
         return self._restore_original_node_ids(self.RP)
+
+    def classify(self, reliable_negatives):
+        '''
+        Phase 2: Label Propagation (Ma & Zhang, 2017).
+        Uses P ∪ RP as positive seeds and RN as negative seeds, propagates
+        labels to remaining unlabeled nodes via sklearn LabelPropagation.
+
+        Parameters:
+        reliable_negatives: node IDs returned by negative_inference()
+
+        Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+        '''
+        if self._node_to_idx is not None:
+            rn_internal = set(self._node_to_idx[int(n)] for n in reliable_negatives)
+        else:
+            rn_internal = set(int(x) for x in reliable_negatives)
+
+        rp_set = set(self.RP.tolist()) if self.RP.numel() > 0 else set()
+        pos_set = set(self.positives.tolist())
+        all_unlabeled = set(self.unlabeled.tolist())
+
+        n_nodes = len(self.features)
+        labels = np.full(n_nodes, -1)
+        for idx in pos_set | rp_set:
+            labels[idx] = 1
+        for idx in rn_internal:
+            labels[idx] = 0
+
+        lp = LabelPropagation(kernel='rbf', max_iter=1000)
+        lp.fit(self.features, labels)
+
+        predictions = {}
+        for idx in all_unlabeled:
+            orig = self._idx_to_node[idx] if self._idx_to_node else idx
+            predictions[orig] = int(lp.transduction_[idx])
+
+        return predictions
 
 def mst_graph(features):
     """
@@ -576,6 +758,59 @@ class MCLS:
         RN = RN[:num_neg]
         return RN
 
+    def classify(self, reliable_negatives, max_iter=10):
+        '''
+        Phase 2: Iterative LS-SVM classification (Chaudhari & Shevade, 2012).
+        Trains SVM on P + RN, iteratively refines labels.
+
+        Parameters:
+        reliable_negatives: indices returned by negative_inference()
+        max_iter (int): maximum iterations
+
+        Returns:
+        dict: {index: predicted_label} for all non-positive nodes
+        '''
+        rn_set = set(int(x) for x in reliable_negatives)
+        pos_set = set(int(x) for x in self.positives)
+        all_indices = set(range(len(self.data)))
+        unlabeled_set = all_indices - pos_set
+
+        if len(rn_set) < 2:
+            return {i: 1 for i in unlabeled_set}
+
+        current_rn = set(rn_set)
+        svm = None
+
+        for _ in range(max_iter):
+            train_idx = list(pos_set) + list(current_rn)
+            train_X = self.data[train_idx].detach().numpy()
+            train_y = np.array([1] * len(pos_set) + [0] * len(current_rn))
+
+            svm = SVC(kernel='rbf', class_weight='balanced')
+            svm.fit(train_X, train_y)
+
+            remaining = list(unlabeled_set - current_rn)
+            if not remaining:
+                break
+
+            pred = svm.predict(self.data[remaining].detach().numpy())
+            new_neg = {remaining[i] for i, p in enumerate(pred) if p == 0}
+
+            if new_neg <= current_rn:
+                break
+            current_rn = rn_set | new_neg
+
+        predictions = {}
+        for idx in current_rn:
+            predictions[idx] = 0
+        remaining = list(unlabeled_set - current_rn)
+        if remaining and svm is not None:
+            pred = svm.predict(self.data[remaining].detach().numpy())
+            for idx, label in zip(remaining, pred):
+                predictions[idx] = int(label)
+
+        return predictions
+
 class LP_PUL:
     '''
     Class that implement LP_PUL algorithm.
@@ -627,3 +862,55 @@ class LP_PUL:
         '''
         RN = torch.stack([x for _, x in sorted(zip(self.a, self.unlabeled), reverse=True)][:num_neg])
         return RN
+
+    def classify(self, reliable_negatives):
+        '''
+        Phase 2: Harmonic function label propagation (Carnevali et al., 2021).
+        Uses P and RN as labeled seeds on the graph adjacency, propagates to rest of U.
+
+        Parameters:
+        reliable_negatives: indices returned by negative_inference()
+
+        Returns:
+        dict: {index: predicted_label} for all unlabeled nodes
+        '''
+        rn_set = set(int(x) for x in reliable_negatives)
+        pos_set = set(int(x) for x in self.positives)
+        all_unlabeled = set(int(x) for x in self.unlabeled)
+
+        # Extract adjacency from networkit graph
+        aux_g = nk2nx(self.graph)
+        n_nodes = self.graph.numberOfNodes()
+        adj = nx.to_numpy_array(aux_g, nodelist=range(n_nodes), dtype=np.float64)
+
+        labeled_list = sorted(list(pos_set | rn_set))
+        unlabeled_list = sorted(list(all_unlabeled - rn_set))
+
+        if not unlabeled_list or not labeled_list:
+            predictions = {}
+            for idx in rn_set:
+                predictions[idx] = 0
+            return predictions
+
+        f_l = np.array([1.0 if idx in pos_set else 0.0 for idx in labeled_list])
+
+        W_uu = adj[np.ix_(unlabeled_list, unlabeled_list)]
+        W_ul = adj[np.ix_(unlabeled_list, labeled_list)]
+        D_uu = np.diag(W_uu.sum(axis=1) + W_ul.sum(axis=1))
+        L_uu = D_uu - W_uu
+
+        # Add small regularization for numerical stability
+        L_uu += 1e-6 * np.eye(len(unlabeled_list))
+
+        try:
+            f_u = np.linalg.solve(L_uu, W_ul @ f_l)
+        except np.linalg.LinAlgError:
+            f_u = np.linalg.lstsq(L_uu, W_ul @ f_l, rcond=None)[0]
+
+        predictions = {}
+        for i, idx in enumerate(unlabeled_list):
+            predictions[idx] = 1 if f_u[i] > 0.5 else 0
+        for idx in rn_set:
+            predictions[idx] = 0
+
+        return predictions
