@@ -7,7 +7,7 @@ Modify the values below to customize your experiments.
 # EXPERIMENT SETTINGS
 # ============================================================================
 EXPERIMENT_CONFIG = {
-    'n_runs': 5,                    # Number of runs per parameter combination
+    'n_runs': 3,                    # Number of runs per parameter combination
     'output_dir': "experiment_results",
     'random_seed': 42,
     'save_intermediate': True,      # Save results every 10 experiments
@@ -74,16 +74,16 @@ BASELINE_CONFIG = {
 # ============================================================================
 PARAMETER_RANGES = {
     # Particle Competition Model parameters
-    'num_particles': [50, 100, 200, 387, 500],
+    'num_particles': [2, 5, 10, 20, 50, 100],
 
     # Reliable Negative Selection parameters
     'cluster_strategy': ['majority', 'percentage'],
-    'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
+    'positive_cluster_threshold': [0.1, 0.2, 0.3, 0.4, 0.5],
     
     # Movement and initialization parameters
     'movement_strategy': ['uniform', 'degree_weighted'],
     'initialization_strategy': ['random', 'degree_weighted'],
-    'avg_node_pot_threshold': [0.7, 0.8, 0.9]
+    'avg_node_pot_threshold': [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 }
 
 # ============================================================================
@@ -99,13 +99,91 @@ QUICK_TEST_PARAMS = {
 }
 
 # ============================================================================
+# PER-DATASET DEFAULT PARAMS FOR PULearningPC
+# (rns_params for reliable negative selection + num_neg)
+# ============================================================================
+PULPC_DEFAULT_PARAMS = {
+    'cora': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 200
+    },
+    'citeseer': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 200
+    },
+    'twitch': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 200
+    },
+    'pubmed': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 200
+    },
+    'mnist': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 300
+    }
+}
+
+# ============================================================================
+# DATASET GENERATION PARAMETERS
+# (used when generating datasets from scratch in experiment pipelines)
+# ============================================================================
+DATASET_GEN_PARAMS = {
+    'cora': {
+        'k': 3,
+        'positive_class_label': 3,
+        'use_original_edges': True,
+        'mst': False
+    },
+    'citeseer': {
+        'k': 3,
+        'positive_class_label': 2,
+        'use_original_edges': True,
+        'mst': False
+    },
+    'pubmed': {
+        'positive_class_label': 2,
+        'use_original_edges': True,
+        'mst': False
+    },
+    'twitch': {
+        'mst': False
+    },
+    'mnist': {
+        'k': 3,
+        'mst': False,
+        'n_samples': 3000
+    }
+}
+
+# ============================================================================
 # EVALUATION METRICS
 # ============================================================================
 EVALUATION_METRICS = [
-    'f1_score',
-    'precision', 
-    'recall',
-    'num_reliable_negatives'
+    'step1_f1_score',
+    'step1_precision',
+    'step1_recall',
+    'step1_num_reliable_negatives',
+    'step2_f1',
+    'step2_precision',
+    'step2_recall',
+    'step2_accuracy'
 ]
 
 # ============================================================================

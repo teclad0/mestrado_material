@@ -4,44 +4,11 @@ import random
 import numpy as np
 from typing import Tuple
 
+from experiment_config import PULPC_DEFAULT_PARAMS
+
+
 def dict_datasets_params_pulpc():
-    return {
-            'cora': {
-                'rns_params': {
-                    'cluster_strategy': 'percentage',
-                    'positive_cluster_threshold': 0.1
-                },
-                'num_neg': 200
-            },
-            'citeseer': {
-                'rns_params': {
-                    'cluster_strategy': 'percentage',
-                    'positive_cluster_threshold': 0.1
-                },
-                'num_neg': 200
-            },
-            'twitch': {
-                'rns_params': {
-                    'cluster_strategy': 'percentage',
-                    'positive_cluster_threshold': 0.1
-                },
-                'num_neg': 200
-            },
-            'pubmed': {
-                'rns_params': {
-                    'cluster_strategy': 'percentage',
-                    'positive_cluster_threshold': 0.1
-                },
-                'num_neg': 200
-            },
-            'mnist': {
-                'rns_params': {
-                    'cluster_strategy': 'percentage',
-                    'positive_cluster_threshold': 0.1
-                },
-                'num_neg': 300
-            }
-        }
+    return PULPC_DEFAULT_PARAMS
 
 def prepare_pu_graph_data(
     graph: nx.Graph, 

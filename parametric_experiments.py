@@ -20,7 +20,8 @@ from generate_dataset import (
     load_mnist_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
-from models_experiment import evaluate_reliable_negative_metrics
+from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2
+from experiment_config import PARAMETER_RANGES, DATASET_CONFIG
 
 class PULearningExperimentRunner:
     """
@@ -75,15 +76,7 @@ class PULearningExperimentRunner:
         if hasattr(self, '_custom_parameter_ranges'):
             param_ranges = self._custom_parameter_ranges
         else:
-            # Default parameter ranges
-            param_ranges = {
-                'num_particles': [50, 100, 200, 387, 500],
-                'cluster_strategy': ['majority', 'percentage'],
-                'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
-                'movement_strategy': ['uniform', 'degree_weighted'],
-                'initialization_strategy': ['random', 'degree_weighted'],
-                'avg_node_pot_threshold': [0.7, 0.8, 0.9]
-            }
+            param_ranges = PARAMETER_RANGES
         
         # Generate all combinations
         param_names = list(param_ranges.keys())
@@ -108,22 +101,14 @@ class PULearningExperimentRunner:
     def get_current_parameter_ranges(self) -> Dict[str, List[Any]]:
         """
         Get the current parameter ranges being used.
-        
+
         Returns:
             Dictionary with current parameter ranges
         """
         if hasattr(self, '_custom_parameter_ranges'):
             return self._custom_parameter_ranges
         else:
-            # Return default ranges
-            return {
-                'num_particles': [50, 100, 200, 387, 500],
-                'cluster_strategy': ['majority', 'percentage'],
-                'positive_cluster_threshold': [0.1, 0.3, 0.5, 0.7, 0.9],
-                'movement_strategy': ['uniform', 'degree_weighted'],
-                'initialization_strategy': ['random', 'degree_weighted'],
-                'avg_node_pot_threshold': [0.7, 0.8, 0.9]
-            }
+            return PARAMETER_RANGES
     
     def load_dataset(self, dataset_name: str, dataset_filename: str = None, **kwargs) -> nx.Graph:
         """
@@ -140,38 +125,9 @@ class PULearningExperimentRunner:
         if self.use_saved_datasets and dataset_filename:
             # Load from pre-generated dataset
             return self.dataset_loader.load_dataset_as_networkx(dataset_filename)
-        
-        # Default parameters for each dataset
-        default_params = {
-            'cora': {
-                'k': 3,
-                'positive_class_label': 3,
-                'percent_positive': 0.1,
-                'use_original_edges': True,
-                'mst': False
-            },
-            'citeseer': {
-                'positive_class_label': 2,
-                'percent_positive': 0.1,
-                'use_original_edges': True,
-                'mst': False
-            },
-            'twitch': {
-                'percent_positive': 0.1,
-                'mst': False
-            },
-            'mnist': {
-                'k': 3,
-                'percent_positive': 0.1,
-                'mst': False
-            },
-            'pubmed': {
-                'positive_class_label': 2,
-                'percent_positive': 0.1,
-                'use_original_edges': True,
-                'mst': False
-            },
-        }
+
+        # Use centralized dataset config
+        default_params = DATASET_CONFIG
 
         # Update with provided kwargs
         params = default_params.get(dataset_name, {}).copy()
@@ -192,149 +148,6 @@ class PULearningExperimentRunner:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     
 
-    
-    def run_single_experiment(self, 
-                             graph: nx.Graph,
-                             params: Dict[str, Any],
-                             run_id: int,
-                             num_neg: int = 200) -> Dict[str, Any]:
-        """
-        Run a single experiment with given parameters.
-        
-        Args:
-            graph: NetworkX graph to use
-            params: Parameter dictionary
-            run_id: ID of this run
-            num_neg: Number of reliable negatives to select (default: 200)
-            
-        Returns:
-            Dictionary with experiment results
-        """
-        try:
-            # Check if graph has true_label attribute for evaluation
-            # Use safe node access since graph nodes may have gaps after processing
-            node_attributes = dict(graph.nodes(data=True))
-            if not any('true_label' in node_attributes[node] for node in graph.nodes()):
-                print(f"Warning: Graph does not have 'true_label' attribute. Evaluation may not be accurate.")
-            
-            # Extract parameters
-            pcm_params = {
-                'num_particles': params['num_particles'],
-                'movement_strategy': params['movement_strategy'],
-                'initialization_strategy': params['initialization_strategy'],
-                'average_node_potential_threshold': params['avg_node_pot_threshold']
-            }
-            
-            rns_params = {
-                'cluster_strategy': params['cluster_strategy'],
-                'positive_cluster_threshold': params['positive_cluster_threshold']
-            }
-            
-            # Initialize and train model
-            model = PULearningPC(
-                graph=graph,
-                num_neg=num_neg,  # Use the parameter passed from command line
-                pcm_params=pcm_params,
-                rns_params=rns_params
-            )
-            
-            # Train the model
-            model.train()
-            
-            # Select reliable negatives
-            reliable_negatives = model.select_reliable_negatives()
-            
-            # Check if we got enough reliable negatives
-            if not reliable_negatives:
-                print(f"Warning: No reliable negatives found for run {run_id}. Marking as error.")
-                # Return error result for insufficient reliable negatives
-                result = {
-                    'run_id': run_id,
-                    'num_particles': params['num_particles'],
-                    'cluster_strategy': params['cluster_strategy'],
-                    'positive_cluster_threshold': params['positive_cluster_threshold'],
-                    'movement_strategy': params['movement_strategy'],
-                    'initialization_strategy': params['initialization_strategy'],
-                    'avg_node_pot_threshold': params['avg_node_pot_threshold'],
-                    'f1_score': 0.0,
-                    'precision': 0.0,
-                    'recall': 0.0,
-                    'num_reliable_negatives': 0,
-                    'coverage': model.pcm.get_graph_coverage()[1],
-                    'fallback_rule_used': model.labeled_graph.graph.get('fallback_rule_used', False),
-                    'avg_threshold_criteria': model.labeled_graph.graph.get('avg_threshold_criteria', False),
-                    'final_iteration_count': model.labeled_graph.graph.get('final_iteration_count', 0),
-                    'graph_nodes': graph.number_of_nodes(),
-                    'graph_edges': graph.number_of_edges(),
-                    'status': 'error: insufficient reliable negatives'
-                }
-                return result
-            
-            # Evaluate results
-            metrics = evaluate_reliable_negative_metrics(
-                graph, reliable_negatives
-            )
-            
-            # Get final coverage from the model
-            final_coverage = model.pcm.get_graph_coverage()[1]
-            
-            # Check if fallback rule was used - look in the labeled_graph where it's stored
-            fallback_rule_used = model.labeled_graph.graph.get('fallback_rule_used', False)
-            
-            # Check if simulation stopped due to threshold or convergence
-            avg_threshold_criteria = model.labeled_graph.graph.get('avg_threshold_criteria', False)
-            
-            # Get the final iteration count from the simulation
-            final_iteration_count = model.labeled_graph.graph.get('final_iteration_count', 0)
-            
-            # Compile results
-            result = {
-                'run_id': run_id,
-                'num_particles': params['num_particles'],
-                'cluster_strategy': params['cluster_strategy'],
-                'positive_cluster_threshold': params['positive_cluster_threshold'],
-                'movement_strategy': params['movement_strategy'],
-                'initialization_strategy': params['initialization_strategy'],
-                'avg_node_pot_threshold': params['avg_node_pot_threshold'],
-                'f1_score': metrics['f1_score'],
-                'precision': metrics['precision'],
-                'recall': metrics['recall'],
-                'num_reliable_negatives': metrics['num_reliable_negatives'],
-                'coverage': final_coverage,
-                'fallback_rule_used': fallback_rule_used,
-                'avg_threshold_criteria': avg_threshold_criteria,
-                'final_iteration_count': final_iteration_count,
-                'graph_nodes': graph.number_of_nodes(),
-                'graph_edges': graph.number_of_edges(),
-                'status': 'success'
-            }
-            
-            return result
-            
-        except Exception as e:
-            # Return error result
-            result = {
-                'run_id': run_id,
-                'num_particles': params.get('num_particles', -1),
-                'cluster_strategy': params.get('cluster_strategy', 'error'),
-                'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
-                'movement_strategy': params.get('movement_strategy', 'error'),
-                'initialization_strategy': params.get('initialization_strategy', 'error'),
-                'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
-                'f1_score': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'num_reliable_negatives': 0,
-                'coverage': 0.0,
-                'fallback_rule_used': False,
-                'avg_threshold_criteria': False,
-                'final_iteration_count': 0,
-                'graph_nodes': graph.number_of_nodes() if graph else 0,
-                'graph_edges': graph.number_of_edges() if graph else 0,
-                'status': f'error: {str(e)}'
-            }
-            return result
-    
     def run_experiments(self, 
                        dataset_name: str,
                        dataset_kwargs: Dict[str, Any] = None,
@@ -443,12 +256,13 @@ class PULearningExperimentRunner:
                         param_str = self._format_params_short(params)
                         status = result.get('status', 'unknown')
                         iters = result.get('final_iteration_count', 0)
-                        f1 = result.get('f1_score', 0.0)
+                        s1_f1 = result.get('step1_f1_score', 0.0)
+                        s2_f1 = result.get('step2_f1', 0.0)
 
                         tqdm.write(
                             f"  [{completed}/{total_tasks}] DONE in {elapsed:.1f}s | "
                             f"{dataset_name} | run={run_id} | {param_str} | "
-                            f"iters={iters}, F1={f1:.3f}, Prec={result.get('precision', 0.0):.3f}, status={status}"
+                            f"iters={iters}, S1_F1={s1_f1:.3f}, S2_F1={s2_f1:.3f}, status={status}"
                         )
 
                         # Show in-flight tasks sorted by elapsed time
@@ -481,10 +295,14 @@ class PULearningExperimentRunner:
                             'movement_strategy': params.get('movement_strategy', 'error'),
                             'initialization_strategy': params.get('initialization_strategy', 'error'),
                             'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
-                            'f1_score': 0.0,
-                            'precision': 0.0,
-                            'recall': 0.0,
-                            'num_reliable_negatives': 0,
+                            'step1_f1_score': 0.0,
+                            'step1_precision': 0.0,
+                            'step1_recall': 0.0,
+                            'step1_num_reliable_negatives': 0,
+                            'step2_f1': 0.0,
+                            'step2_precision': 0.0,
+                            'step2_recall': 0.0,
+                            'step2_accuracy': 0.0,
                             'coverage': 0.0,
                             'fallback_rule_used': False,
                             'avg_threshold_criteria': False,
@@ -556,7 +374,6 @@ class PULearningExperimentRunner:
             # Check if we got enough reliable negatives
             if not reliable_negatives:
                 print(f"Warning: No reliable negatives found for run {run_id}. Marking as error.")
-                # Return error result for insufficient reliable negatives
                 result = {
                     'run_id': run_id,
                     'num_particles': params['num_particles'],
@@ -565,10 +382,14 @@ class PULearningExperimentRunner:
                     'movement_strategy': params['movement_strategy'],
                     'initialization_strategy': params['initialization_strategy'],
                     'avg_node_pot_threshold': params['avg_node_pot_threshold'],
-                    'f1_score': 0.0,
-                    'precision': 0.0,
-                    'recall': 0.0,
-                    'num_reliable_negatives': 0,
+                    'step1_f1_score': 0.0,
+                    'step1_precision': 0.0,
+                    'step1_recall': 0.0,
+                    'step1_num_reliable_negatives': 0,
+                    'step2_f1': 0.0,
+                    'step2_precision': 0.0,
+                    'step2_recall': 0.0,
+                    'step2_accuracy': 0.0,
                     'coverage': model.pcm.get_graph_coverage()[1],
                     'fallback_rule_used': model.labeled_graph.graph.get('fallback_rule_used', False),
                     'avg_threshold_criteria': model.labeled_graph.graph.get('avg_threshold_criteria', False),
@@ -578,25 +399,24 @@ class PULearningExperimentRunner:
                     'status': 'error: insufficient reliable negatives'
                 }
                 return result
-            
-            # Evaluate results
+
+            # Step 1 metrics: evaluate reliable negative purity
             metrics = evaluate_reliable_negative_metrics(
                 graph, reliable_negatives
             )
-            
+
+            # Step 2: full graph classification via harmonic label propagation
+            predictions = model.classify(reliable_negatives)
+            step2_metrics = evaluate_phase2(graph, predictions)
+
             # Get final coverage from the model
             final_coverage = model.pcm.get_graph_coverage()[1]
-            
-            # Check if fallback rule was used - look in the labeled_graph where it's stored
+
             fallback_rule_used = model.labeled_graph.graph.get('fallback_rule_used', False)
-            
-            # Check if simulation stopped due to threshold or convergence
             avg_threshold_criteria = model.labeled_graph.graph.get('avg_threshold_criteria', False)
-            
-            # Get the final iteration count from the simulation
             final_iteration_count = model.labeled_graph.graph.get('final_iteration_count', 0)
-            
-            # Compile results
+
+            # Compile results (Step 1 + Step 2 metrics)
             result = {
                 'run_id': run_id,
                 'num_particles': params['num_particles'],
@@ -605,10 +425,14 @@ class PULearningExperimentRunner:
                 'movement_strategy': params['movement_strategy'],
                 'initialization_strategy': params['initialization_strategy'],
                 'avg_node_pot_threshold': params['avg_node_pot_threshold'],
-                'f1_score': metrics['f1_score'],
-                'precision': metrics['precision'],
-                'recall': metrics['recall'],
-                'num_reliable_negatives': metrics['num_reliable_negatives'],
+                'step1_f1_score': metrics['f1_score'],
+                'step1_precision': metrics['precision'],
+                'step1_recall': metrics['recall'],
+                'step1_num_reliable_negatives': metrics['num_reliable_negatives'],
+                'step2_f1': step2_metrics['f1'],
+                'step2_precision': step2_metrics['precision'],
+                'step2_recall': step2_metrics['recall'],
+                'step2_accuracy': step2_metrics['accuracy'],
                 'coverage': final_coverage,
                 'fallback_rule_used': fallback_rule_used,
                 'avg_threshold_criteria': avg_threshold_criteria,
@@ -617,11 +441,10 @@ class PULearningExperimentRunner:
                 'graph_edges': graph.number_of_edges(),
                 'status': 'success'
             }
-            
+
             return result
-            
+
         except Exception as e:
-            # Return error result
             result = {
                 'run_id': run_id,
                 'num_particles': params.get('num_particles', -1),
@@ -630,10 +453,14 @@ class PULearningExperimentRunner:
                 'movement_strategy': params.get('movement_strategy', 'error'),
                 'initialization_strategy': params.get('initialization_strategy', 'error'),
                 'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
-                'f1_score': 0.0,
-                'precision': 0.0,
-                'recall': 0.0,
-                'num_reliable_negatives': 0,
+                'step1_f1_score': 0.0,
+                'step1_precision': 0.0,
+                'step1_recall': 0.0,
+                'step1_num_reliable_negatives': 0,
+                'step2_f1': 0.0,
+                'step2_precision': 0.0,
+                'step2_recall': 0.0,
+                'step2_accuracy': 0.0,
                 'coverage': 0.0,
                 'fallback_rule_used': False,
                 'avg_threshold_criteria': False,
@@ -643,7 +470,7 @@ class PULearningExperimentRunner:
                 'status': f'error: {str(e)}'
             }
             return result
-    
+
     def save_intermediate_results(self, results: List[Dict], dataset_name: str):
         """Save intermediate results to avoid losing progress."""
         df = pd.DataFrame(results)
@@ -657,20 +484,27 @@ class PULearningExperimentRunner:
         print(f"Results saved to {filename}")
         
         # Also save a summary
+        agg_dict = {
+            'step1_f1_score': ['mean', 'std', 'min', 'max'],
+            'step1_precision': ['mean', 'std'],
+            'step1_recall': ['mean', 'std'],
+            'step1_num_reliable_negatives': ['mean', 'std'],
+            'coverage': ['mean', 'std', 'min', 'max'],
+            'fallback_rule_used': ['sum', 'count'],
+            'avg_threshold_criteria': ['sum', 'count'],
+            'final_iteration_count': ['mean', 'std', 'min', 'max']
+        }
+        if 'step2_f1' in df.columns:
+            agg_dict['step2_f1'] = ['mean', 'std', 'min', 'max']
+            agg_dict['step2_precision'] = ['mean', 'std']
+            agg_dict['step2_recall'] = ['mean', 'std']
+            agg_dict['step2_accuracy'] = ['mean', 'std']
+
         summary = df.groupby([
             'num_particles', 'cluster_strategy',
             'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
             'avg_node_pot_threshold'
-        ]).agg({
-            'f1_score': ['mean', 'std', 'min', 'max'],
-            'precision': ['mean', 'std'],
-            'recall': ['mean', 'std'],
-            'num_reliable_negatives': ['mean', 'std'],
-            'coverage': ['mean', 'std', 'min', 'max'],
-            'fallback_rule_used': ['sum', 'count'],  # Count how many times fallback was used
-            'avg_threshold_criteria': ['sum', 'count'],  # Count how many times threshold criteria was met
-            'final_iteration_count': ['mean', 'std', 'min', 'max']  # Statistics on iteration counts
-        }).round(4)
+        ]).agg(agg_dict).round(4)
         
         summary_filename = f"{self.output_dir}/{dataset_name}_summary_results.csv"
         summary.to_csv(summary_filename)

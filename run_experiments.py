@@ -10,6 +10,9 @@ import sys
 import os
 import multiprocessing as mp
 from parametric_experiments import PULearningExperimentRunner
+from experiment_config import (
+    PARAMETER_RANGES, QUICK_TEST_PARAMS, DATASET_CONFIG, BASELINE_CONFIG
+)
 
 def main():
     parser = argparse.ArgumentParser(
@@ -157,27 +160,11 @@ Examples:
     # Parse arguments
     args = parser.parse_args()
     
-    # Set default parameter ranges
+    # Set default parameter ranges from centralized config
     if args.quick_test:
-        # Quick test with reduced parameters
-        default_params = {
-            'num_particles': [100, 200, 387],
-            'cluster_strategy': ['percentage'],
-            'positive_cluster_threshold': [0.01, 0.1, 0.2, 0.3],
-            'movement_strategy': ['uniform', 'degree_weighted'],
-            'initialization_strategy': ['random', 'degree_weighted'],
-            'avg_node_pot_threshold': [0.7, 0.8, 0.9]
-        }
+        default_params = QUICK_TEST_PARAMS.copy()
     else:
-        # Full parameter ranges
-        default_params = {
-            'num_particles': [50, 100, 200, 387, 500],
-            'cluster_strategy': ['percentage'],
-            'positive_cluster_threshold': [0.01, 0.1, 0.2, 0.3],
-            'movement_strategy': ['uniform', 'degree_weighted'],
-            'initialization_strategy': ['random', 'degree_weighted'],
-            'avg_node_pot_threshold': [0.2, 0.5, 0.6, 0.7, 0.8, 0.9]
-        }
+        default_params = PARAMETER_RANGES.copy()
     
     # Override with command line arguments if provided
     if args.num_particles:
@@ -193,63 +180,21 @@ Examples:
     if args.avg_node_pot_threshold:
         default_params['avg_node_pot_threshold'] = args.avg_node_pot_threshold
     
-    # Create dataset-specific parameter dictionaries
+    # Build dataset-specific parameter dictionaries from centralized config
     dataset_kwargs = {}
-    
-    # Per-dataset num_neg (how many reliable negatives the model should return)
-    dataset_num_neg = {
-        'cora': 200,
-        'citeseer': 200,
-        'pubmed': 200,
-        'twitch': 200,
-        'mnist': 300
-    }
+    dataset_num_neg = {name: BASELINE_CONFIG['num_neg'].get(name, args.num_neg)
+                       for name in args.dataset}
 
-    # Cora dataset parameters
-    if 'cora' in args.dataset:
-        dataset_kwargs['cora'] = {
-            'k': args.k,
-            'positive_class_label': 3,
-            'percent_positive': args.percent_positive,
-            'use_original_edges': args.use_original_edges,
-            'mst': args.mst
-        }
-
-    # CiteSeer dataset parameters
-    if 'citeseer' in args.dataset:
-        dataset_kwargs['citeseer'] = {
-            'k': args.k,
-            'positive_class_label': 2,
-            'percent_positive': args.percent_positive,
-            'use_original_edges': args.use_original_edges,
-            'mst': args.mst
-        }
-
-    # PubMed dataset parameters
-    if 'pubmed' in args.dataset:
-        dataset_kwargs['pubmed'] = {
-            'k': args.k,
-            'positive_class_label': 2,
-            'percent_positive': args.percent_positive,
-            'use_original_edges': args.use_original_edges,
-            'mst': args.mst
-        }
-
-    # Twitch dataset parameters (no 'k' parameter)
-    if 'twitch' in args.dataset:
-        dataset_kwargs['twitch'] = {
-            'percent_positive': args.percent_positive,
-            'mst': args.mst
-        }
-
-    # MNIST dataset parameters
-    if 'mnist' in args.dataset:
-        dataset_kwargs['mnist'] = {
-            'k': args.k,
-            'percent_positive': args.percent_positive,
-            'mst': args.mst,
-            'n_samples': 3000
-        }
+    for dataset_name in args.dataset:
+        base_params = DATASET_CONFIG.get(dataset_name, {}).copy()
+        # Override with CLI arguments where provided
+        base_params['percent_positive'] = args.percent_positive
+        base_params['mst'] = args.mst
+        if 'k' in base_params:
+            base_params['k'] = args.k
+        if 'use_original_edges' in base_params:
+            base_params['use_original_edges'] = args.use_original_edges
+        dataset_kwargs[dataset_name] = base_params
 
     print("="*80)
     print("PULearningPC Parametric Experiments")
@@ -320,11 +265,12 @@ Examples:
                 print(f"\n{dataset_name.upper()} Results Summary:")
                 print(f"  Total experiments: {len(results_df)}")
                 print(f"  Successful runs: {len(successful_results)}")
-                print(f"  Best F1 Score: {successful_results['f1_score'].max():.4f}")
+                print(f"  Best Step1 F1: {successful_results['step1_f1_score'].max():.4f}")
+                print(f"  Best Step2 F1: {successful_results['step2_f1'].max():.4f}")
                 print(f"  Average Coverage: {successful_results['coverage'].mean():.4f}")
-                
-                # Show best parameters
-                best_run = successful_results.loc[successful_results['f1_score'].idxmax()]
+
+                # Show best parameters (by step2 F1 — end-to-end metric)
+                best_run = successful_results.loc[successful_results['step2_f1'].idxmax()]
                 print(f"  Best parameters: particles={best_run['num_particles']}, "
                       f"strategy={best_run['cluster_strategy']}, threshold={best_run['positive_cluster_threshold']}")
             

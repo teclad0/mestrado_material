@@ -13,6 +13,7 @@ import pandas as pd
 import random
 from typing import Union, List
 from aux import dict_datasets_params_pulpc
+from experiment_config import DATASET_GEN_PARAMS
 
 def evaluate_f1_score(graph, reliable_negatives, true_label_key='true_label', target_negatives=None):
     """
@@ -211,31 +212,7 @@ def run_models(dataset_name: str, n_samples: int = None, percent_positive: float
     # Check if dataset exists, if not generate it
     filepath = os.path.join(manager.datasets_dir, filename)
     if not os.path.exists(filepath):
-        # Dataset parameters for generation
-        dataset_params = {
-            'cora': {
-                'k': 3,
-                'positive_class_label': 3,
-                'use_original_edges': True,
-                'mst': False
-            },
-            'citeseer': {
-                'k': 3,
-                'positive_class_label': 2,
-                'use_original_edges': True,
-                'mst': False
-            },
-            'twitch': {
-                'mst': False
-            },
-            'mnist': {
-                'k': 3,
-                'mst': False,
-                'n_samples': 3000
-            }
-        }
-        
-        params = dataset_params.get(dataset_name, {})
+        params = DATASET_GEN_PARAMS.get(dataset_name, {})
         manager.generate_and_save_dataset(dataset_name, params, n_samples, percent_positive)
     
     # Load dataset
@@ -405,36 +382,7 @@ def run_multiple_experiments(dataset_name: str, n_samples: int = None, percent_p
             # Initialize manager with specific seed
             manager = DatasetManager(random_seed=random_seed)
             
-            # Dataset parameters for generation
-            dataset_gen_params = {
-                'cora': {
-                    'k': 3,
-                    'positive_class_label': 3,
-                    'use_original_edges': True,
-                    'mst': False
-                },
-                'citeseer': {
-                    'k': 3,
-                    'positive_class_label': 2,
-                    'use_original_edges': True,
-                    'mst': False
-                },
-                'twitch': {
-                    'mst': False
-                },
-                'pubmed': {
-                    'positive_class_label': 2,
-                    'use_original_edges': True,
-                    'mst': False
-                },
-                'mnist': {
-                    'k': 3,
-                    'mst': False,
-                    'n_samples': 3000
-                }
-            }
-
-            params = dataset_gen_params.get(dataset_name, {})
+            params = DATASET_GEN_PARAMS.get(dataset_name, {})
             # Generate dataset with run_number - this will create the appropriate filename
             filename = manager.generate_and_save_dataset(dataset_name, params, n_samples, percent_pos, run_number=run)
             

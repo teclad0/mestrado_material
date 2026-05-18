@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from collections import deque
+from sklearn.semi_supervised import LabelSpreading
 tqdm.pandas()
 
 def is_cluster_positive(
@@ -673,7 +674,7 @@ class PULearningPC:
         self.labeled_graph.graph['avg_threshold_criteria'] = avg_threshold_criteria
 
     def select_reliable_negatives(self):
-        print("\n--- Step 2: Selecting Reliable Negatives using rns ---")
+        print("\n--- Step 1: Selecting Reliable Negatives using RNS ---")
         rns = ReliableNegativeSelection(
             self.labeled_graph,
             owner_groups=self.pcm.owner_groups,
@@ -684,17 +685,17 @@ class PULearningPC:
         )
         rns.assign_cluster_label()
         rns.calculate_dissimilarity()
-        
+
         # Propagate the fallback rule flag back to the main graph
         fallback_used = rns.graph.graph.get('fallback_rule_used', False)
         self.labeled_graph.graph['fallback_rule_used'] = fallback_used
-        
+
         ranked_nodes = rns.rank_nodes_dissimilarity(num_neg=self.num_neg)
-        
+
         if not ranked_nodes:
             print(f"Warning: Could not find {self.num_neg} reliable negatives. Only found {len(ranked_nodes)} nodes with dissimilarity scores.")
             return []
-        
+
         reliable_negatives = [node for node, _ in ranked_nodes]
 
         print(f"Identified {len(reliable_negatives)} reliable negatives.")
@@ -702,8 +703,9 @@ class PULearningPC:
 
     def classify(self, reliable_negatives):
         '''
-        Phase 2: Harmonic function label propagation on the graph.
-        Uses P (observed positives) and RN as labeled seeds, propagates to all U.
+        Step 2: LLGC (Label Spreading) classification on the graph.
+        Uses P (observed positives) as class 1 and RN as class 0 seeds,
+        then propagates labels to all unlabeled nodes via LLGC.
 
         Parameters:
         reliable_negatives: node IDs returned by select_reliable_negatives()
@@ -716,39 +718,37 @@ class PULearningPC:
         node_to_idx = {n: i for i, n in enumerate(node_list)}
         n = len(node_list)
 
+        rn_set = set(reliable_negatives)
+        pos_set = {node for node in node_list if graph.nodes[node].get('observed_label') == 1}
+
+        # Build label array: P → 1, RN → 0, all others → -1 (unlabeled)
+        labels = np.full(n, -1, dtype=int)
+        for i, node in enumerate(node_list):
+            if node in pos_set:
+                labels[i] = 1
+            elif node in rn_set:
+                labels[i] = 0
+
+        if np.sum(labels == 1) == 0 or np.sum(labels == 0) == 0:
+            return {node: 0 for node in rn_set}
+
+        # Use graph adjacency as the affinity matrix for LLGC
         adj = nx.to_numpy_array(graph, nodelist=node_list, dtype=np.float64)
 
-        rn_idx = {node_to_idx[n] for n in reliable_negatives if n in node_to_idx}
-        pos_idx = {node_to_idx[n] for n in node_list
-                   if graph.nodes[n].get('observed_label') == 1}
-        unlabeled_idx = {node_to_idx[n] for n in node_list
-                         if graph.nodes[n].get('observed_label') == 0}
+        label_spreading = LabelSpreading(
+            kernel=lambda X, Y=None: adj if Y is None else adj,
+            alpha=0.2,
+            max_iter=30,
+            n_jobs=-1
+        )
+        label_spreading.fit(adj, labels)
 
-        labeled = sorted(list(pos_idx | rn_idx))
-        unlabeled = sorted(list(unlabeled_idx - rn_idx))
-
-        if not unlabeled or not labeled:
-            return {node_list[i]: 0 for i in rn_idx}
-
-        f_l = np.array([1.0 if i in pos_idx else 0.0 for i in labeled])
-
-        W_uu = adj[np.ix_(unlabeled, unlabeled)]
-        W_ul = adj[np.ix_(unlabeled, labeled)]
-        D_uu = np.diag(W_uu.sum(axis=1) + W_ul.sum(axis=1))
-        L_uu = D_uu - W_uu
-
-        L_uu += 1e-6 * np.eye(len(unlabeled))
-
-        try:
-            f_u = np.linalg.solve(L_uu, W_ul @ f_l)
-        except np.linalg.LinAlgError:
-            f_u = np.linalg.lstsq(L_uu, W_ul @ f_l, rcond=None)[0]
+        predicted_labels = label_spreading.transduction_
 
         predictions = {}
-        for i, idx in enumerate(unlabeled):
-            predictions[node_list[idx]] = 1 if f_u[i] > 0.5 else 0
-        for idx in rn_idx:
-            predictions[node_list[idx]] = 0
+        for i, node in enumerate(node_list):
+            if node not in pos_set:
+                predictions[node] = int(predicted_labels[i])
 
         return predictions
 
