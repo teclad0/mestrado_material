@@ -43,7 +43,8 @@ DATASET_CONFIG = {
     },
     'mnist': {
         'k': 3,
-        'percent_positive': 0.1
+        'percent_positive': 0.1,
+        'n_samples': 3000
     }
 }
 

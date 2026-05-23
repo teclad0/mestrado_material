@@ -13,7 +13,6 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from collections import deque
-from sklearn.semi_supervised import LabelSpreading
 tqdm.pandas()
 
 def is_cluster_positive(
@@ -703,9 +702,15 @@ class PULearningPC:
 
     def classify(self, reliable_negatives):
         '''
-        Step 2: LLGC (Label Spreading) classification on the graph.
-        Uses P (observed positives) as class 1 and RN as class 0 seeds,
-        then propagates labels to all unlabeled nodes via LLGC.
+        Step 2: Logistic Regression on node features augmented with Step 1 info.
+        Trains on P (positive seeds) and RN (reliable negatives from Step 1),
+        then predicts all remaining unlabeled nodes.
+
+        The classifier input per node is: [original_features, potential, cluster_label]
+        This lets the model learn the optimal combination of attribute similarity
+        and structural confidence from Step 1 — no arbitrary constants.
+
+        Complexity: O(n × d) time, O(n × d) memory.
 
         Parameters:
         reliable_negatives: node IDs returned by select_reliable_negatives()
@@ -713,42 +718,80 @@ class PULearningPC:
         Returns:
         dict: {node_id: predicted_label} for all unlabeled nodes
         '''
+        from sklearn.linear_model import LogisticRegression
+        from sklearn.preprocessing import StandardScaler
+
         graph = self.graph
+        labeled_graph = self.labeled_graph
         node_list = sorted(list(graph.nodes()))
-        node_to_idx = {n: i for i, n in enumerate(node_list)}
         n = len(node_list)
 
         rn_set = set(reliable_negatives)
         pos_set = {node for node in node_list if graph.nodes[node].get('observed_label') == 1}
 
-        # Build label array: P → 1, RN → 0, all others → -1 (unlabeled)
-        labels = np.full(n, -1, dtype=int)
+        if not pos_set or not rn_set:
+            return {}
+
+        # Build augmented feature matrix: [features, potential, cluster_label]
+        features_list = []
+        for node in node_list:
+            node_features = graph.nodes[node]['features']
+            potential = labeled_graph.nodes[node].get('potential', 0.0)
+            cluster_label = labeled_graph.nodes[node].get('cluster_positive', 0.5)
+            if cluster_label is None:
+                cluster_label = 0.5
+            augmented = np.append(node_features, [potential, cluster_label])
+            features_list.append(augmented)
+
+        X_all = np.array(features_list)
+
+        # Separate training set (P + RN) from prediction set (rest)
+        train_indices = []
+        train_labels = []
+        predict_indices = []
+
         for i, node in enumerate(node_list):
             if node in pos_set:
-                labels[i] = 1
+                train_indices.append(i)
+                train_labels.append(1)
             elif node in rn_set:
-                labels[i] = 0
+                train_indices.append(i)
+                train_labels.append(0)
+            else:
+                predict_indices.append(i)
 
-        if np.sum(labels == 1) == 0 or np.sum(labels == 0) == 0:
-            return {node: 0 for node in rn_set}
+        X_train = X_all[train_indices]
+        y_train = np.array(train_labels)
 
-        # Use graph adjacency as the affinity matrix for LLGC
-        adj = nx.to_numpy_array(graph, nodelist=node_list, dtype=np.float64)
+        # Normalize features for stable training
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_predict_scaled = scaler.transform(X_all[predict_indices])
 
-        label_spreading = LabelSpreading(
-            kernel=lambda X, Y=None: adj if Y is None else adj,
-            alpha=0.2,
-            max_iter=30,
-            n_jobs=-1
+        # Train logistic regression with balanced class weights
+        clf = LogisticRegression(
+            C=1.0,
+            class_weight='balanced',
+            max_iter=1000,
+            solver='lbfgs'
         )
-        label_spreading.fit(adj, labels)
+        clf.fit(X_train_scaled, y_train)
 
-        predicted_labels = label_spreading.transduction_
+        # Predict all unlabeled nodes
+        y_pred = clf.predict(X_predict_scaled)
 
+        # Build predictions dict
         predictions = {}
-        for i, node in enumerate(node_list):
+        for idx in train_indices:
+            node = node_list[idx]
             if node not in pos_set:
-                predictions[node] = int(predicted_labels[i])
+                predictions[node] = 0  # RN nodes stay as negative
+
+        for i, idx in enumerate(predict_indices):
+            node = node_list[idx]
+            predictions[node] = int(y_pred[i])
+
+        self.step2_iterations = 0  # LogReg is non-iterative (closed-form)
 
         return predictions
 

@@ -405,9 +405,10 @@ class PULearningExperimentRunner:
                 graph, reliable_negatives
             )
 
-            # Step 2: full graph classification via harmonic label propagation
+            # Step 2: full graph classification via sparse label propagation
             predictions = model.classify(reliable_negatives)
             step2_metrics = evaluate_phase2(graph, predictions)
+            step2_iterations = getattr(model, 'step2_iterations', -1)
 
             # Get final coverage from the model
             final_coverage = model.pcm.get_graph_coverage()[1]
@@ -433,6 +434,7 @@ class PULearningExperimentRunner:
                 'step2_precision': step2_metrics['precision'],
                 'step2_recall': step2_metrics['recall'],
                 'step2_accuracy': step2_metrics['accuracy'],
+                'step2_iterations': step2_iterations,
                 'coverage': final_coverage,
                 'fallback_rule_used': fallback_rule_used,
                 'avg_threshold_criteria': avg_threshold_criteria,
