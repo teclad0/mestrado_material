@@ -20,7 +20,7 @@ from generate_dataset import (
     load_mnist_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
-from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2
+from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2, classify_with_svm
 from experiment_config import PARAMETER_RANGES, DATASET_CONFIG
 
 class PULearningExperimentRunner:
@@ -148,7 +148,7 @@ class PULearningExperimentRunner:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     
 
-    def run_experiments(self, 
+    def run_experiments(self,
                        dataset_name: str,
                        dataset_kwargs: Dict[str, Any] = None,
                        dataset_filename: str = None,
@@ -156,26 +156,23 @@ class PULearningExperimentRunner:
                        num_neg: int = 200) -> pd.DataFrame:
         """
         Run all experiments for a given dataset.
-        
+
         Args:
             dataset_name: Name of the dataset to use
             dataset_kwargs: Additional parameters for dataset loading
             dataset_filename: Optional filename for pre-generated dataset
             n_jobs: Number of parallel jobs (None = use all available cores)
             num_neg: Number of reliable negatives to select (default: 200)
-            
+
         Returns:
             DataFrame with all experiment results
         """
         print(f"Starting experiments on {dataset_name} dataset...")
-        
-        # Load dataset
-        graph = self.load_dataset(dataset_name, dataset_filename, **(dataset_kwargs or {}))
-        print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+
         # Get parameter combinations
         param_combinations = self.get_parameter_grid()
         total_experiments = len(param_combinations) * self.n_runs
-        
+
         print(f"Running {total_experiments} experiments ({len(param_combinations)} parameter combinations × {self.n_runs} runs each)")
         
         # Show which parameter ranges are being used
@@ -183,28 +180,49 @@ class PULearningExperimentRunner:
         print(f"Parameter ranges being used:")
         for param, values in current_ranges.items():
             print(f"  {param}: {values}")
-        
+
         # Determine number of parallel jobs
         if n_jobs is None:
-            n_jobs = min(mp.cpu_count(), 8)  # Use all cores but cap at 8 to avoid memory issues
-        
+            n_jobs = min(mp.cpu_count(), 8)
+
         print(f"Using {n_jobs} parallel processes")
-        
-        # Run experiments in parallel
-        results = self._run_experiments_parallel(graph, param_combinations, n_jobs, num_neg, dataset_name)
-        
-        # Convert to DataFrame
-        df = pd.DataFrame(results)
-        
+
+        # Group experiments by percent_positive (each value needs a fresh dataset)
+        percent_positive_values = current_ranges.get('percent_positive', None)
+
+        if percent_positive_values:
+            all_results = []
+            for pct_pos in percent_positive_values:
+                print(f"\n--- Loading dataset with percent_positive={pct_pos} ---")
+                kwargs = (dataset_kwargs or {}).copy()
+                kwargs['percent_positive'] = pct_pos
+                graph = self.load_dataset(dataset_name, dataset_filename, **kwargs)
+                print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+
+                # Filter param combinations to only those with this percent_positive
+                pct_combinations = [p for p in param_combinations if p['percent_positive'] == pct_pos]
+                results = self._run_experiments_parallel(graph, pct_combinations, n_jobs, num_neg, dataset_name)
+                all_results.extend(results)
+
+            df = pd.DataFrame(all_results)
+        else:
+            # No percent_positive in grid — load dataset once with kwargs
+            graph = self.load_dataset(dataset_name, dataset_filename, **(dataset_kwargs or {}))
+            print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+            results = self._run_experiments_parallel(graph, param_combinations, n_jobs, num_neg, dataset_name)
+            df = pd.DataFrame(results)
+
         # Save final results
         self.save_final_results(df, dataset_name)
-        
+
         return df
     
     @staticmethod
     def _format_params_short(params: Dict[str, Any]) -> str:
         """Format parameters as a compact string for logging."""
-        return (f"p={params['num_particles']}, "
+        pct = params.get('percent_positive', None)
+        pct_str = f"pct={pct}, " if pct is not None else ""
+        return (f"{pct_str}p={params['num_particles']}, "
                 f"strat={params['cluster_strategy']}, "
                 f"thresh={params['positive_cluster_threshold']}, "
                 f"mov={params['movement_strategy']}, "
@@ -289,6 +307,7 @@ class PULearningExperimentRunner:
                         tqdm.write(f"  ERROR for task {task_idx} after {elapsed:.1f}s: {e}")
                         error_result = {
                             'run_id': run_id,
+                            'percent_positive': params.get('percent_positive', None),
                             'num_particles': params.get('num_particles', -1),
                             'cluster_strategy': params.get('cluster_strategy', 'error'),
                             'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
@@ -376,6 +395,7 @@ class PULearningExperimentRunner:
                 print(f"Warning: No reliable negatives found for run {run_id}. Marking as error.")
                 result = {
                     'run_id': run_id,
+                    'percent_positive': params.get('percent_positive', None),
                     'num_particles': params['num_particles'],
                     'cluster_strategy': params['cluster_strategy'],
                     'positive_cluster_threshold': params['positive_cluster_threshold'],
@@ -405,10 +425,9 @@ class PULearningExperimentRunner:
                 graph, reliable_negatives
             )
 
-            # Step 2: full graph classification via sparse label propagation
-            predictions = model.classify(reliable_negatives)
+            # Step 2: unified SVM classification
+            predictions = classify_with_svm(graph, reliable_negatives)
             step2_metrics = evaluate_phase2(graph, predictions)
-            step2_iterations = getattr(model, 'step2_iterations', -1)
 
             # Get final coverage from the model
             final_coverage = model.pcm.get_graph_coverage()[1]
@@ -420,6 +439,7 @@ class PULearningExperimentRunner:
             # Compile results (Step 1 + Step 2 metrics)
             result = {
                 'run_id': run_id,
+                'percent_positive': params.get('percent_positive', None),
                 'num_particles': params['num_particles'],
                 'cluster_strategy': params['cluster_strategy'],
                 'positive_cluster_threshold': params['positive_cluster_threshold'],
@@ -434,7 +454,6 @@ class PULearningExperimentRunner:
                 'step2_precision': step2_metrics['precision'],
                 'step2_recall': step2_metrics['recall'],
                 'step2_accuracy': step2_metrics['accuracy'],
-                'step2_iterations': step2_iterations,
                 'coverage': final_coverage,
                 'fallback_rule_used': fallback_rule_used,
                 'avg_threshold_criteria': avg_threshold_criteria,
@@ -449,6 +468,7 @@ class PULearningExperimentRunner:
         except Exception as e:
             result = {
                 'run_id': run_id,
+                'percent_positive': params.get('percent_positive', None),
                 'num_particles': params.get('num_particles', -1),
                 'cluster_strategy': params.get('cluster_strategy', 'error'),
                 'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
@@ -502,11 +522,14 @@ class PULearningExperimentRunner:
             agg_dict['step2_recall'] = ['mean', 'std']
             agg_dict['step2_accuracy'] = ['mean', 'std']
 
-        summary = df.groupby([
+        groupby_cols = [
             'num_particles', 'cluster_strategy',
             'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
             'avg_node_pot_threshold'
-        ]).agg(agg_dict).round(4)
+        ]
+        if 'percent_positive' in df.columns and df['percent_positive'].notna().any():
+            groupby_cols.insert(0, 'percent_positive')
+        summary = df.groupby(groupby_cols).agg(agg_dict).round(4)
         
         summary_filename = f"{self.output_dir}/{dataset_name}_summary_results.csv"
         summary.to_csv(summary_filename)

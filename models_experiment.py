@@ -7,11 +7,13 @@ from dataset_system import DatasetManager
 from model import PULearningPC
 from models import MCLS, LP_PUL
 from sklearn.metrics import f1_score, precision_score, recall_score
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import os
 import pandas as pd
 import random
-from typing import Union, List
+from typing import Union, List, Dict, Any
 from aux import dict_datasets_params_pulpc
 from experiment_config import DATASET_GEN_PARAMS
 
@@ -187,6 +189,76 @@ def evaluate_phase2(graph, predictions, true_label_key='true_label'):
         'recall': recall_score(y_true, y_pred, average='binary', zero_division=0),
         'accuracy': sum(1 for t, p in zip(y_true, y_pred) if t == p) / len(y_true)
     }
+
+def classify_with_svm(graph, reliable_negatives, max_iter: int = 10, threshold: float = 0.5) -> Dict[Any, int]:
+    """
+    Unified Step 2 classifier for all PU Learning models.
+    Trains an iterative SVM on P (positive seeds) + RN (reliable negatives),
+    then classifies all remaining unlabeled nodes.
+
+    Args:
+        graph: NetworkX graph with node attributes 'features' and 'observed_label'
+        reliable_negatives: List of node IDs identified as reliable negatives
+        max_iter: Maximum SVM iterations for expanding the negative set
+        threshold: Decision function threshold for adding new negatives
+
+    Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+    """
+    node_attributes = dict(graph.nodes(data=True))
+    node_list = sorted(list(graph.nodes()))
+
+    rn_set = set(int(x) for x in reliable_negatives)
+    pos_set = {node for node in node_list if node_attributes[node].get('observed_label') == 1}
+    all_unlabeled = {node for node in node_list if node_attributes[node].get('observed_label') == 0}
+
+    if not pos_set or not rn_set:
+        return {}
+
+    # Build feature matrix
+    features = {node: np.array(node_attributes[node]['features']) for node in node_list}
+
+    # Iterative SVM: expand RN set each round
+    current_rn = set(rn_set)
+    svm = None
+
+    for _ in range(max_iter):
+        train_nodes = list(pos_set) + list(current_rn)
+        train_X = np.array([features[n] for n in train_nodes])
+        train_y = np.array([1] * len(pos_set) + [0] * len(current_rn))
+
+        scaler = StandardScaler()
+        train_X_scaled = scaler.fit_transform(train_X)
+
+        svm = SVC(kernel='rbf', class_weight='balanced')
+        svm.fit(train_X_scaled, train_y)
+
+        remaining = list(all_unlabeled - current_rn)
+        if not remaining:
+            break
+
+        remaining_X = scaler.transform(np.array([features[n] for n in remaining]))
+        decisions = svm.decision_function(remaining_X)
+        new_neg = [remaining[i] for i, d in enumerate(decisions) if d < -threshold]
+
+        if not new_neg:
+            break
+        current_rn.update(new_neg)
+
+    # Final predictions
+    predictions = {}
+    for node in current_rn:
+        predictions[node] = 0
+
+    remaining = list(all_unlabeled - current_rn)
+    if remaining and svm is not None:
+        remaining_X = scaler.transform(np.array([features[n] for n in remaining]))
+        pred = svm.predict(remaining_X)
+        for node, label in zip(remaining, pred):
+            predictions[node] = int(label)
+
+    return predictions
+
 
 def run_models(dataset_name: str, n_samples: int = None, percent_positive: float = 0.1):
     """Run all three models on the same dataset."""

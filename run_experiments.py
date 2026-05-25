@@ -139,9 +139,9 @@ Examples:
     
     parser.add_argument(
         '--percent-positive',
+        nargs='+',
         type=float,
-        default=0.1,
-        help='Percentage of positive examples to label (default: 0.1)'
+        help='Percentage(s) of positive examples to label (e.g., 0.05 0.1 0.25)'
     )
     
     parser.add_argument(
@@ -179,6 +179,8 @@ Examples:
         default_params['initialization_strategy'] = args.initialization_strategy
     if args.avg_node_pot_threshold:
         default_params['avg_node_pot_threshold'] = args.avg_node_pot_threshold
+    if args.percent_positive:
+        default_params['percent_positive'] = args.percent_positive
     
     # Build dataset-specific parameter dictionaries from centralized config
     dataset_kwargs = {}
@@ -188,12 +190,13 @@ Examples:
     for dataset_name in args.dataset:
         base_params = DATASET_CONFIG.get(dataset_name, {}).copy()
         # Override with CLI arguments where provided
-        base_params['percent_positive'] = args.percent_positive
         base_params['mst'] = args.mst
         if 'k' in base_params:
             base_params['k'] = args.k
         if 'use_original_edges' in base_params:
             base_params['use_original_edges'] = args.use_original_edges
+        # Remove percent_positive from dataset kwargs — it's now in the parameter grid
+        base_params.pop('percent_positive', None)
         dataset_kwargs[dataset_name] = base_params
 
     print("="*80)
@@ -266,13 +269,15 @@ Examples:
                 print(f"  Total experiments: {len(results_df)}")
                 print(f"  Successful runs: {len(successful_results)}")
                 print(f"  Best Step1 F1: {successful_results['step1_f1_score'].max():.4f}")
-                print(f"  Best Step2 F1: {successful_results['step2_f1'].max():.4f}")
+                print(f"  Best Step2 F1 (SVM): {successful_results['step2_f1'].max():.4f}")
                 print(f"  Average Coverage: {successful_results['coverage'].mean():.4f}")
 
-                # Show best parameters (by step2 F1 — end-to-end metric)
-                best_run = successful_results.loc[successful_results['step2_f1'].idxmax()]
-                print(f"  Best parameters: particles={best_run['num_particles']}, "
-                      f"strategy={best_run['cluster_strategy']}, threshold={best_run['positive_cluster_threshold']}")
+                # Show best parameters (by step1 F1 — measures RN quality directly)
+                best_run = successful_results.loc[successful_results['step1_f1_score'].idxmax()]
+                print(f"  Best params (by Step1 F1): particles={best_run['num_particles']}, "
+                      f"strategy={best_run['cluster_strategy']}, threshold={best_run['positive_cluster_threshold']}, "
+                      f"movement={best_run['movement_strategy']}, init={best_run['initialization_strategy']}, "
+                      f"avg_pot={best_run['avg_node_pot_threshold']}")
             
         except Exception as e:
             print(f"Error running experiments on {dataset_name}: {e}")

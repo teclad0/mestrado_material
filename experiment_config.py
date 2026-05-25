@@ -53,7 +53,7 @@ DATASET_CONFIG = {
 # ============================================================================
 BASELINE_CONFIG = {
     'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'pubmed'],
-    'percent_positive': [0.01, 0.25],
+    'percent_positive': [0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25],
     'num_neg': {
         'cora': 200,
         'citeseer': 200,
@@ -80,11 +80,14 @@ PARAMETER_RANGES = {
     # Reliable Negative Selection parameters
     'cluster_strategy': ['majority', 'percentage'],
     'positive_cluster_threshold': [0.1, 0.2, 0.3, 0.4, 0.5],
-    
+
     # Movement and initialization parameters
     'movement_strategy': ['uniform', 'degree_weighted'],
     'initialization_strategy': ['random', 'degree_weighted'],
-    'avg_node_pot_threshold': [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    'avg_node_pot_threshold': [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+
+    # SCAR labeling frequency
+    'percent_positive': [0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25]
 }
 
 # ============================================================================
@@ -96,7 +99,8 @@ QUICK_TEST_PARAMS = {
     'positive_cluster_threshold': [0.1, 0.3, 0.5],
     'movement_strategy': ['uniform', 'degree_weighted'],
     'initialization_strategy': ['random', 'degree_weighted'],
-    'avg_node_pot_threshold': [0.7, 0.8, 0.9]
+    'avg_node_pot_threshold': [0.7, 0.8, 0.9],
+    'percent_positive': [0.05, 0.1, 0.25]
 }
 
 # ============================================================================
