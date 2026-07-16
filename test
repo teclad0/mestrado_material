@@ -1,0 +1,134 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+
+datasets = ['cora', 'citeseer', 'twitch', 'mnist', 'pubmed']
+all_dfs = []
+
+for ds in datasets:
+    df = pd.read_csv(f'experiment_results/{ds}_final_results.csv')
+    df['dataset'] = ds
+    all_dfs.append(df)
+
+data = pd.concat(all_dfs, ignore_index=True)
+
+# ============================================================
+# CHART A: Aggregated, failures counted as 0, Portuguese
+# ============================================================
+
+fig = plt.figure(figsize=(18, 9))
+
+gs = fig.add_gridspec(2, 6, hspace=0.35, wspace=0.3)
+
+ax_positions = {
+    'cora': gs[0, 0:2],
+    'citeseer': gs[0, 2:4],
+    'twitch': gs[0, 4:6],
+    'mnist': gs[1, 1:3],
+    'pubmed': gs[1, 3:5],
+}
+
+fig.suptitle("F1 Score vs avg_pot_threshold\n(agregado entre todas as combinações de estratégia)", 
+             fontsize=13, fontweight='bold', y=0.98)
+
+particle_colors = {2: '#e41a1c', 5: '#377eb8', 10: '#4daf4a', 
+                   20: '#984ea3', 50: '#ff7f00', 100: '#a65628'}
+
+axes_list = []
+for ds in datasets:
+    ax = fig.add_subplot(ax_positions[ds])
+    axes_list.append(ax)
+    ds_data = data[data['dataset'] == ds]
+    
+    # ALL runs — failures already have f1=0
+    grouped = ds_data.groupby(['avg_node_pot_threshold', 'num_particles'])['step1_f1_score'].agg(['mean', 'std']).reset_index()
+    
+    for npart in sorted(ds_data['num_particles'].unique()):
+        subset = grouped[grouped['num_particles'] == npart]
+        ax.plot(subset['avg_node_pot_threshold'], subset['mean'], 
+                marker='o', markersize=5, linewidth=2.2,
+                color=particle_colors.get(npart, 'gray'),
+                label=f'{npart} partículas')
+        ax.fill_between(subset['avg_node_pot_threshold'], 
+                       subset['mean'] - subset['std'],
+                       subset['mean'] + subset['std'],
+                       alpha=0.1, color=particle_colors.get(npart, 'gray'))
+    
+    ax.set_xlabel('avg_pot_threshold', fontsize=10)
+    ax.set_ylabel('F1 Score Médio (Etapa 1)', fontsize=10)
+    ax.set_title(ds.upper(), fontsize=12, fontweight='bold')
+    ax.set_xticks([0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9])
+    ax.grid(True, alpha=0.3)
+    ax.set_ylim(0, 1.05)
+
+handles, labels = axes_list[0].get_legend_handles_labels()
+fig.legend(handles, labels, loc='lower center', ncol=6, fontsize=11, 
+           bbox_to_anchor=(0.5, -0.02), frameon=True)
+
+plt.savefig('analysis_charts/f1_vs_avg_pot_threshold_agregado_por_dataset.jpg', 
+            dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved: f1_vs_avg_pot_threshold_agregado_por_dataset.jpg")
+
+# ============================================================
+# CHART C: Small multiples, failures counted as 0, Portuguese
+# ============================================================
+
+strategy_combos = [
+    ('random', 'uniform'),
+    ('random', 'degree_weighted'),
+    ('degree_weighted', 'uniform'),
+    ('degree_weighted', 'degree_weighted')
+]
+
+strategy_labels_pt = {
+    ('random', 'uniform'): 'inic=aleatória\nmov=uniforme',
+    ('random', 'degree_weighted'): 'inic=aleatória\nmov=pond. grau',
+    ('degree_weighted', 'uniform'): 'inic=pond. grau\nmov=uniforme',
+    ('degree_weighted', 'degree_weighted'): 'inic=pond. grau\nmov=pond. grau',
+}
+
+fig, axes = plt.subplots(4, 5, figsize=(22, 16), sharey=True, sharex=True)
+fig.suptitle("F1 Score vs avg_pot_threshold\n(por combinação de estratégia e dataset)", 
+             fontsize=14, fontweight='bold', y=0.98)
+
+for row_idx, (init_s, move_s) in enumerate(strategy_combos):
+    for col_idx, ds in enumerate(datasets):
+        ax = axes[row_idx, col_idx]
+        ds_data = data[(data['dataset'] == ds) & 
+                       (data['initialization_strategy'] == init_s) &
+                       (data['movement_strategy'] == move_s)]
+        
+        grouped = ds_data.groupby(['avg_node_pot_threshold', 'num_particles'])['step1_f1_score'].agg(['mean', 'std']).reset_index()
+        
+        for npart in sorted(data['num_particles'].unique()):
+            subset = grouped[grouped['num_particles'] == npart]
+            if len(subset) > 0:
+                ax.plot(subset['avg_node_pot_threshold'], subset['mean'],
+                       marker='o', markersize=3, linewidth=1.5,
+                       color=particle_colors.get(npart, 'gray'),
+                       label=f'{npart}p' if row_idx == 0 and col_idx == 0 else '')
+                ax.fill_between(subset['avg_node_pot_threshold'],
+                              subset['mean'] - subset['std'],
+                              subset['mean'] + subset['std'],
+                              alpha=0.08, color=particle_colors.get(npart, 'gray'))
+        
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(0, 1.05)
+        
+        if row_idx == 0:
+            ax.set_title(ds.upper(), fontsize=11, fontweight='bold')
+        if col_idx == 0:
+            ax.set_ylabel(strategy_labels_pt[(init_s, move_s)], fontsize=9, fontweight='bold')
+        if row_idx == 3:
+            ax.set_xlabel('Limiar', fontsize=9)
+
+handles, labels = axes[0, 0].get_legend_handles_labels()
+fig.legend(handles, [f'{p} partículas' for p in sorted(data['num_particles'].unique())],
+           loc='lower center', ncol=6, fontsize=10, bbox_to_anchor=(0.5, -0.02))
+
+plt.tight_layout(rect=[0, 0.03, 1, 0.96])
+plt.savefig('analysis_charts/f1_vs_avg_pot_threshold_por_estrategia_e_dataset.jpg',
+            dpi=150, bbox_inches='tight')
+plt.close()
+print("Saved: f1_vs_avg_pot_threshold_por_estrategia_e_dataset.jpg")

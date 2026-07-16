@@ -5,7 +5,7 @@ import random
 import json
 import os
 import time
-from typing import Dict, List, Any, Tuple
+from typing import Dict, List, Any, Tuple, Optional
 from itertools import product
 from tqdm import tqdm
 import warnings
@@ -14,10 +14,10 @@ from functools import partial
 from concurrent.futures import ProcessPoolExecutor, as_completed
 warnings.filterwarnings('ignore')
 
-from model import PULearningPC
+from model import PULearningPC, ReliableNegativeSelection
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
-    load_mnist_scar
+    load_mnist_scar, relabel_graph_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
 from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2, classify_with_svm
@@ -77,17 +77,64 @@ class PULearningExperimentRunner:
             param_ranges = self._custom_parameter_ranges
         else:
             param_ranges = PARAMETER_RANGES
-        
+
         # Generate all combinations
         param_names = list(param_ranges.keys())
         param_values = list(param_ranges.values())
-        
+
         combinations = []
         for values in product(*param_values):
             param_dict = dict(zip(param_names, values))
             combinations.append(param_dict)
-            
+
         return combinations
+
+    def get_simulation_and_rns_grids(self) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Split the parameter grid into expensive simulation params and cheap RNS params.
+
+        Simulation params: num_particles, movement_strategy, initialization_strategy, avg_node_pot_threshold
+        RNS params: cluster_strategy, positive_cluster_threshold
+
+        Also eliminates redundant majority+threshold combinations (majority ignores threshold).
+
+        Returns:
+            Tuple of (simulation_combinations, rns_combinations)
+        """
+        if hasattr(self, '_custom_parameter_ranges'):
+            param_ranges = self._custom_parameter_ranges
+        else:
+            param_ranges = PARAMETER_RANGES
+
+        # Simulation parameters (expensive — control particle competition)
+        sim_param_names = ['num_particles', 'movement_strategy', 'initialization_strategy', 'avg_node_pot_threshold']
+        sim_values = [param_ranges[k] for k in sim_param_names if k in param_ranges]
+        sim_names = [k for k in sim_param_names if k in param_ranges]
+
+        sim_combinations = []
+        for values in product(*sim_values):
+            sim_combinations.append(dict(zip(sim_names, values)))
+
+        # RNS parameters (cheap — only post-processing)
+        # For 'majority' strategy, threshold is irrelevant, so include only once
+        rns_combinations = []
+        cluster_strategies = param_ranges.get('cluster_strategy', ['percentage'])
+        thresholds = param_ranges.get('positive_cluster_threshold', [0.5])
+
+        for strategy in cluster_strategies:
+            if strategy == 'majority':
+                rns_combinations.append({
+                    'cluster_strategy': 'majority',
+                    'positive_cluster_threshold': thresholds[0]  # placeholder, ignored
+                })
+            else:
+                for thresh in thresholds:
+                    rns_combinations.append({
+                        'cluster_strategy': strategy,
+                        'positive_cluster_threshold': thresh
+                    })
+
+        return sim_combinations, rns_combinations
     
     def set_custom_parameter_ranges(self, param_ranges: Dict[str, List[Any]]):
         """
@@ -157,6 +204,10 @@ class PULearningExperimentRunner:
         """
         Run all experiments for a given dataset.
 
+        Uses an optimized strategy: simulation parameters (expensive) are separated
+        from RNS parameters (cheap). Each simulation runs once, then multiple RNS
+        configurations are evaluated on the cached result.
+
         Args:
             dataset_name: Name of the dataset to use
             dataset_kwargs: Additional parameters for dataset loading
@@ -169,39 +220,55 @@ class PULearningExperimentRunner:
         """
         print(f"Starting experiments on {dataset_name} dataset...")
 
-        # Get parameter combinations
-        param_combinations = self.get_parameter_grid()
-        total_experiments = len(param_combinations) * self.n_runs
+        # Split grid into simulation (expensive) and RNS (cheap) params
+        sim_combinations, rns_combinations = self.get_simulation_and_rns_grids()
 
-        print(f"Running {total_experiments} experiments ({len(param_combinations)} parameter combinations × {self.n_runs} runs each)")
-        
-        # Show which parameter ranges are being used
         current_ranges = self.get_current_parameter_ranges()
+        total_simulations = len(sim_combinations) * self.n_runs
+        total_evaluations = total_simulations * len(rns_combinations)
+
         print(f"Parameter ranges being used:")
         for param, values in current_ranges.items():
             print(f"  {param}: {values}")
 
+        print(f"\nOptimized execution plan:")
+        print(f"  Unique simulation configs: {len(sim_combinations)}")
+        print(f"  RNS configs per simulation: {len(rns_combinations)} (majority×1 + percentage×thresholds)")
+        print(f"  Runs per simulation config: {self.n_runs}")
+        print(f"  Total expensive simulations: {total_simulations}")
+        print(f"  Total evaluations (results rows): {total_evaluations}")
+
+        naive_total = len(self.get_parameter_grid()) * self.n_runs
+        percent_positive_values = current_ranges.get('percent_positive', None)
+        if percent_positive_values:
+            naive_total *= 1  # already in grid
+            total_evaluations *= len(percent_positive_values)
+            total_simulations *= len(percent_positive_values)
+        savings = (1 - total_simulations / naive_total) * 100 if naive_total > 0 else 0
+        print(f"  Simulation savings vs naive grid: {savings:.0f}% fewer simulations")
+
         # Determine number of parallel jobs
         if n_jobs is None:
             n_jobs = min(mp.cpu_count(), 8)
+        print(f"  Using {n_jobs} parallel processes")
 
-        print(f"Using {n_jobs} parallel processes")
-
-        # Group experiments by percent_positive (each value needs a fresh dataset)
-        percent_positive_values = current_ranges.get('percent_positive', None)
-
+        # Group experiments by percent_positive (each value needs different SCAR labeling)
         if percent_positive_values:
+            # Build graph ONCE (structure + features + true_label), then relabel for each pct
+            print(f"\n--- Building base graph for {dataset_name} (structure reused across percent_positive values) ---")
+            kwargs = (dataset_kwargs or {}).copy()
+            kwargs['percent_positive'] = percent_positive_values[0]  # initial load
+            base_graph = self.load_dataset(dataset_name, dataset_filename, **kwargs)
+            print(f"Base graph: {base_graph.number_of_nodes()} nodes, {base_graph.number_of_edges()} edges")
+
             all_results = []
             for pct_pos in percent_positive_values:
-                print(f"\n--- Loading dataset with percent_positive={pct_pos} ---")
-                kwargs = (dataset_kwargs or {}).copy()
-                kwargs['percent_positive'] = pct_pos
-                graph = self.load_dataset(dataset_name, dataset_filename, **kwargs)
-                print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
+                print(f"\n--- Re-labeling with percent_positive={pct_pos} ---")
+                graph = relabel_graph_scar(base_graph, pct_pos)
 
-                # Filter param combinations to only those with this percent_positive
-                pct_combinations = [p for p in param_combinations if p['percent_positive'] == pct_pos]
-                results = self._run_experiments_parallel(graph, pct_combinations, n_jobs, num_neg, dataset_name)
+                results = self._run_experiments_optimized(
+                    graph, sim_combinations, rns_combinations, n_jobs, num_neg, dataset_name, pct_pos
+                )
                 all_results.extend(results)
 
             df = pd.DataFrame(all_results)
@@ -209,7 +276,9 @@ class PULearningExperimentRunner:
             # No percent_positive in grid — load dataset once with kwargs
             graph = self.load_dataset(dataset_name, dataset_filename, **(dataset_kwargs or {}))
             print(f"Loaded {dataset_name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
-            results = self._run_experiments_parallel(graph, param_combinations, n_jobs, num_neg, dataset_name)
+            results = self._run_experiments_optimized(
+                graph, sim_combinations, rns_combinations, n_jobs, num_neg, dataset_name, None
+            )
             df = pd.DataFrame(results)
 
         # Save final results
@@ -229,91 +298,223 @@ class PULearningExperimentRunner:
                 f"init={params['initialization_strategy']}, "
                 f"avg_thresh={params['avg_node_pot_threshold']}")
 
-    def _run_experiments_parallel(self,
-                                 graph: nx.Graph,
-                                 param_combinations: List[Dict[str, Any]],
-                                 n_jobs: int,
-                                 num_neg: int,
-                                 dataset_name: str) -> List[Dict[str, Any]]:
+    def _run_experiments_optimized(self,
+                                  graph: nx.Graph,
+                                  sim_combinations: List[Dict[str, Any]],
+                                  rns_combinations: List[Dict[str, Any]],
+                                  n_jobs: int,
+                                  num_neg: int,
+                                  dataset_name: str,
+                                  percent_positive: Optional[float]) -> List[Dict[str, Any]]:
         """
-        Run experiments in parallel using multiprocessing.
+        Optimized experiment execution: run each simulation config once,
+        then evaluate multiple RNS configs on the cached result.
         """
+        # Build tasks: one per (sim_config, run_id)
         all_tasks = []
-        for i, params in enumerate(param_combinations):
+        for i, sim_params in enumerate(sim_combinations):
             for run_id in range(self.n_runs):
-                all_tasks.append((params, run_id, i))
+                all_tasks.append((sim_params, run_id, i))
 
-        total_tasks = len(all_tasks)
-        print(f"Total tasks to process: {total_tasks}")
+        total_simulations = len(all_tasks)
+        total_evaluations = total_simulations * len(rns_combinations)
+        print(f"Running {total_simulations} simulations → {total_evaluations} total evaluations")
 
-        run_single_experiment_partial = partial(self._run_single_experiment_worker, graph, num_neg)
+        run_worker = partial(
+            self._run_simulation_and_evaluate_rns,
+            graph, num_neg, rns_combinations, percent_positive
+        )
 
         results = []
         completed = 0
+        successful = 0
+        failed = 0
+        task_times = []
+        experiment_start = time.time()
 
         with ProcessPoolExecutor(max_workers=n_jobs) as executor:
             future_to_task = {}
             submit_times = {}
 
-            for task_idx, (params, run_id, i) in enumerate(all_tasks):
-                future = executor.submit(run_single_experiment_partial, params, run_id, task_idx)
-                future_to_task[future] = (params, run_id, task_idx)
+            for task_idx, (sim_params, run_id, i) in enumerate(all_tasks):
+                future = executor.submit(run_worker, sim_params, run_id, task_idx)
+                future_to_task[future] = (sim_params, run_id, task_idx)
                 submit_times[future] = time.time()
 
-            with tqdm(total=total_tasks, desc="Running experiments") as pbar:
+            with tqdm(total=total_simulations, desc="Running simulations") as pbar:
                 for future in as_completed(future_to_task):
-                    params, run_id, task_idx = future_to_task[future]
+                    sim_params, run_id, task_idx = future_to_task[future]
                     elapsed = time.time() - submit_times[future]
 
                     try:
-                        result = future.result()
-                        results.append(result)
+                        batch_results = future.result()
+                        results.extend(batch_results)
                         completed += 1
                         pbar.update(1)
 
-                        param_str = self._format_params_short(params)
-                        status = result.get('status', 'unknown')
-                        iters = result.get('final_iteration_count', 0)
-                        s1_f1 = result.get('step1_f1_score', 0.0)
-                        s2_f1 = result.get('step2_f1', 0.0)
+                        # Track success/failure
+                        batch_successes = sum(1 for r in batch_results if r.get('status') == 'success')
+                        batch_failures = len(batch_results) - batch_successes
+                        if batch_successes > 0:
+                            successful += 1
+                        else:
+                            failed += 1
+                        task_times.append(elapsed)
 
+                        # Log result with final_avg_potential
+                        first = batch_results[0] if batch_results else {}
+                        status = first.get('status', 'unknown')
+                        iters = first.get('final_iteration_count', 0)
+                        coverage = first.get('coverage', 0.0)
+                        avg_thresh_reached = first.get('avg_threshold_criteria', False)
+
+                        sim_str = (
+                            f"p={sim_params.get('num_particles')}, "
+                            f"mov={sim_params.get('movement_strategy')}, "
+                            f"init={sim_params.get('initialization_strategy')}, "
+                            f"avg_thresh={sim_params.get('avg_node_pot_threshold')}"
+                        )
+                        best_f1 = max((r.get('step1_f1_score', 0) for r in batch_results), default=0)
                         tqdm.write(
-                            f"  [{completed}/{total_tasks}] DONE in {elapsed:.1f}s | "
-                            f"{dataset_name} | run={run_id} | {param_str} | "
-                            f"iters={iters}, S1_F1={s1_f1:.3f}, S2_F1={s2_f1:.3f}, status={status}"
+                            f"  [{completed}/{total_simulations}] {elapsed:.1f}s | "
+                            f"{dataset_name} | run={run_id} | {sim_str} | "
+                            f"iters={iters}, cov={coverage:.2f}, thresh_reached={avg_thresh_reached}, "
+                            f"best_F1={best_f1:.3f}, status={status}"
                         )
 
-                        # Show in-flight tasks sorted by elapsed time
-                        in_flight = []
+                        # Write live status JSON
                         now = time.time()
-                        for f, (p, r, _) in future_to_task.items():
-                            if not f.done():
-                                in_flight.append((now - submit_times[f], p, r))
+                        in_flight_count = sum(1 for f in future_to_task if not f.done())
+                        avg_time = np.mean(task_times) if task_times else 0
+                        remaining_tasks = total_simulations - completed
+                        eta_seconds = avg_time * remaining_tasks / max(n_jobs, 1)
 
-                        if in_flight:
-                            in_flight.sort(reverse=True, key=lambda x: x[0])
-                            n_show = min(3, len(in_flight))
-                            tqdm.write(f"  >> {len(in_flight)} tasks in-flight ({dataset_name}). Longest running:")
-                            for rank, (t, p, r) in enumerate(in_flight[:n_show], 1):
-                                tqdm.write(
-                                    f"     {rank}. {t:.0f}s elapsed | run={r} | "
-                                    f"{self._format_params_short(p)}"
-                                )
+                        self._write_live_status(
+                            dataset_name=dataset_name,
+                            total_tasks=total_simulations,
+                            completed=completed,
+                            successful=successful,
+                            failed=failed,
+                            in_flight=in_flight_count,
+                            elapsed_seconds=now - experiment_start,
+                            avg_task_time=avg_time,
+                            eta_seconds=eta_seconds,
+                            percent_positive=percent_positive,
+                            results=results,
+                            recent_task={
+                                'task_idx': task_idx,
+                                'params': sim_str,
+                                'time': round(elapsed, 1),
+                                'f1': round(best_f1, 4),
+                                'coverage': round(coverage, 4),
+                                'iters': iters,
+                                'status': status
+                            }
+                        )
 
-                        if completed % 50 == 0:
+                        if completed % 20 == 0:
                             self.save_intermediate_results(results, f"{dataset_name}_intermediate")
 
                     except Exception as e:
                         tqdm.write(f"  ERROR for task {task_idx} after {elapsed:.1f}s: {e}")
-                        error_result = {
+                        # Generate error results for all RNS combos
+                        for rns_params in rns_combinations:
+                            error_result = {
+                                'run_id': run_id,
+                                'percent_positive': percent_positive,
+                                'num_particles': sim_params.get('num_particles', -1),
+                                'cluster_strategy': rns_params.get('cluster_strategy', 'error'),
+                                'positive_cluster_threshold': rns_params.get('positive_cluster_threshold', -1),
+                                'movement_strategy': sim_params.get('movement_strategy', 'error'),
+                                'initialization_strategy': sim_params.get('initialization_strategy', 'error'),
+                                'avg_node_pot_threshold': sim_params.get('avg_node_pot_threshold', -1),
+                                'step1_f1_score': 0.0,
+                                'step1_precision': 0.0,
+                                'step1_recall': 0.0,
+                                'step1_num_reliable_negatives': 0,
+                                'step2_f1': 0.0,
+                                'step2_precision': 0.0,
+                                'step2_recall': 0.0,
+                                'step2_accuracy': 0.0,
+                                'coverage': 0.0,
+                                'fallback_rule_used': False,
+                                'avg_threshold_criteria': False,
+                                'final_iteration_count': 0,
+                                'graph_nodes': graph.number_of_nodes() if graph else 0,
+                                'graph_edges': graph.number_of_edges() if graph else 0,
+                                'status': f'error: {str(e)}'
+                            }
+                            results.append(error_result)
+                        completed += 1
+                        failed += 1
+                        task_times.append(elapsed)
+                        pbar.update(1)
+
+        return results
+    
+    def _run_simulation_and_evaluate_rns(self,
+                                        graph: nx.Graph,
+                                        num_neg: int,
+                                        rns_combinations: List[Dict[str, Any]],
+                                        percent_positive: Optional[float],
+                                        sim_params: Dict[str, Any],
+                                        run_id: int,
+                                        task_idx: int) -> List[Dict[str, Any]]:
+        """
+        Worker: run ONE simulation, then evaluate ALL RNS configs on the result.
+
+        Returns a list of result dicts (one per RNS config).
+        """
+        results = []
+
+        try:
+            pcm_params = {
+                'num_particles': sim_params['num_particles'],
+                'movement_strategy': sim_params['movement_strategy'],
+                'initialization_strategy': sim_params['initialization_strategy'],
+                'average_node_potential_threshold': sim_params['avg_node_pot_threshold']
+            }
+
+            # Run simulation ONCE (the expensive part)
+            model = PULearningPC(
+                graph=graph,
+                num_neg=num_neg,
+                pcm_params=pcm_params,
+                rns_params={'cluster_strategy': 'percentage', 'positive_cluster_threshold': 0.1}
+            )
+            model.train()
+
+            # Cache simulation state
+            final_coverage = model.pcm.get_graph_coverage()[1]
+            avg_threshold_criteria = model.labeled_graph.graph.get('avg_threshold_criteria', False)
+            final_iteration_count = model.labeled_graph.graph.get('final_iteration_count', 0)
+
+            # Evaluate each RNS configuration on the cached simulation (the cheap part)
+            for rns_params in rns_combinations:
+                try:
+                    rns = ReliableNegativeSelection(
+                        model.labeled_graph,
+                        owner_groups=model.pcm.owner_groups,
+                        cluster_sizes=model.pcm.cluster_sizes,
+                        cluster_positive_counts=model.pcm.cluster_positive_counts,
+                        **rns_params
+                    )
+                    rns.assign_cluster_label()
+                    rns.calculate_dissimilarity()
+                    ranked_nodes = rns.rank_nodes_dissimilarity(num_neg=num_neg)
+
+                    fallback_rule_used = rns.graph.graph.get('fallback_rule_used', False)
+
+                    if not ranked_nodes:
+                        results.append({
                             'run_id': run_id,
-                            'percent_positive': params.get('percent_positive', None),
-                            'num_particles': params.get('num_particles', -1),
-                            'cluster_strategy': params.get('cluster_strategy', 'error'),
-                            'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
-                            'movement_strategy': params.get('movement_strategy', 'error'),
-                            'initialization_strategy': params.get('initialization_strategy', 'error'),
-                            'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
+                            'percent_positive': percent_positive,
+                            'num_particles': sim_params['num_particles'],
+                            'cluster_strategy': rns_params['cluster_strategy'],
+                            'positive_cluster_threshold': rns_params['positive_cluster_threshold'],
+                            'movement_strategy': sim_params['movement_strategy'],
+                            'initialization_strategy': sim_params['initialization_strategy'],
+                            'avg_node_pot_threshold': sim_params['avg_node_pot_threshold'],
                             'step1_f1_score': 0.0,
                             'step1_precision': 0.0,
                             'step1_recall': 0.0,
@@ -322,86 +523,90 @@ class PULearningExperimentRunner:
                             'step2_precision': 0.0,
                             'step2_recall': 0.0,
                             'step2_accuracy': 0.0,
-                            'coverage': 0.0,
-                            'fallback_rule_used': False,
-                            'avg_threshold_criteria': False,
-                            'final_iteration_count': 0,
-                            'graph_nodes': graph.number_of_nodes() if graph else 0,
-                            'graph_edges': graph.number_of_edges() if graph else 0,
-                            'status': f'error: {str(e)}'
-                        }
-                        results.append(error_result)
-                        completed += 1
-                        pbar.update(1)
+                            'coverage': final_coverage,
+                            'fallback_rule_used': fallback_rule_used,
+                            'avg_threshold_criteria': avg_threshold_criteria,
+                            'final_iteration_count': final_iteration_count,
+                            'graph_nodes': graph.number_of_nodes(),
+                            'graph_edges': graph.number_of_edges(),
+                            'status': 'error: insufficient reliable negatives'
+                        })
+                        continue
 
-        return results
-    
-    def _run_single_experiment_worker(self, 
-                                     graph: nx.Graph, 
-                                     num_neg: int,
-                                     params: Dict[str, Any], 
-                                     run_id: int,
-                                     task_idx: int) -> Dict[str, Any]:
-        """
-        Worker function for parallel execution of single experiments.
-        This function needs to be a standalone method for multiprocessing.
-        
-        Args:
-            graph: NetworkX graph to use
-            num_neg: Number of reliable negatives to select
-            params: Parameter dictionary
-            run_id: ID of this run
-            task_idx: Index of this task
-            
-        Returns:
-            Dictionary with experiment results
-        """
-        try:
-            # Check if graph has true_label attribute for evaluation
-            # Use safe node access since graph nodes may have gaps after processing
-            node_attributes = dict(graph.nodes(data=True))
-            if not any('true_label' in node_attributes[node] for node in graph.nodes()):
-                print(f"Warning: Graph does not have 'true_label' attribute. Evaluation may not be accurate.")
-            
-            # Extract parameters
-            pcm_params = {
-                'num_particles': params['num_particles'],
-                'movement_strategy': params['movement_strategy'],
-                'initialization_strategy': params['initialization_strategy'],
-                'average_node_potential_threshold': params['avg_node_pot_threshold']
-            }
-            
-            rns_params = {
-                'cluster_strategy': params['cluster_strategy'],
-                'positive_cluster_threshold': params['positive_cluster_threshold']
-            }
-            
-            # Initialize and train model
-            model = PULearningPC(
-                graph=graph,
-                num_neg=num_neg,  # Use the parameter passed from command line
-                pcm_params=pcm_params,
-                rns_params=rns_params
-            )
-            
-            # Train the model
-            model.train()
-            
-            # Select reliable negatives
-            reliable_negatives = model.select_reliable_negatives()
-            
-            # Check if we got enough reliable negatives
-            if not reliable_negatives:
-                print(f"Warning: No reliable negatives found for run {run_id}. Marking as error.")
-                result = {
+                    reliable_negatives = [node for node, _ in ranked_nodes]
+
+                    # Step 1 metrics
+                    metrics = evaluate_reliable_negative_metrics(graph, reliable_negatives)
+
+                    # Step 2: SVM classification
+                    predictions = classify_with_svm(graph, reliable_negatives)
+                    step2_metrics = evaluate_phase2(graph, predictions)
+
+                    results.append({
+                        'run_id': run_id,
+                        'percent_positive': percent_positive,
+                        'num_particles': sim_params['num_particles'],
+                        'cluster_strategy': rns_params['cluster_strategy'],
+                        'positive_cluster_threshold': rns_params['positive_cluster_threshold'],
+                        'movement_strategy': sim_params['movement_strategy'],
+                        'initialization_strategy': sim_params['initialization_strategy'],
+                        'avg_node_pot_threshold': sim_params['avg_node_pot_threshold'],
+                        'step1_f1_score': metrics['f1_score'],
+                        'step1_precision': metrics['precision'],
+                        'step1_recall': metrics['recall'],
+                        'step1_num_reliable_negatives': metrics['num_reliable_negatives'],
+                        'step2_f1': step2_metrics['f1'],
+                        'step2_precision': step2_metrics['precision'],
+                        'step2_recall': step2_metrics['recall'],
+                        'step2_accuracy': step2_metrics['accuracy'],
+                        'coverage': final_coverage,
+                        'fallback_rule_used': fallback_rule_used,
+                        'avg_threshold_criteria': avg_threshold_criteria,
+                        'final_iteration_count': final_iteration_count,
+                        'graph_nodes': graph.number_of_nodes(),
+                        'graph_edges': graph.number_of_edges(),
+                        'status': 'success'
+                    })
+
+                except Exception as e:
+                    results.append({
+                        'run_id': run_id,
+                        'percent_positive': percent_positive,
+                        'num_particles': sim_params['num_particles'],
+                        'cluster_strategy': rns_params.get('cluster_strategy', 'error'),
+                        'positive_cluster_threshold': rns_params.get('positive_cluster_threshold', -1),
+                        'movement_strategy': sim_params['movement_strategy'],
+                        'initialization_strategy': sim_params['initialization_strategy'],
+                        'avg_node_pot_threshold': sim_params['avg_node_pot_threshold'],
+                        'step1_f1_score': 0.0,
+                        'step1_precision': 0.0,
+                        'step1_recall': 0.0,
+                        'step1_num_reliable_negatives': 0,
+                        'step2_f1': 0.0,
+                        'step2_precision': 0.0,
+                        'step2_recall': 0.0,
+                        'step2_accuracy': 0.0,
+                        'coverage': final_coverage,
+                        'fallback_rule_used': False,
+                        'avg_threshold_criteria': avg_threshold_criteria,
+                        'final_iteration_count': final_iteration_count,
+                        'graph_nodes': graph.number_of_nodes(),
+                        'graph_edges': graph.number_of_edges(),
+                        'status': f'error: {str(e)}'
+                    })
+
+        except Exception as e:
+            # Simulation itself failed — generate error for all RNS combos
+            for rns_params in rns_combinations:
+                results.append({
                     'run_id': run_id,
-                    'percent_positive': params.get('percent_positive', None),
-                    'num_particles': params['num_particles'],
-                    'cluster_strategy': params['cluster_strategy'],
-                    'positive_cluster_threshold': params['positive_cluster_threshold'],
-                    'movement_strategy': params['movement_strategy'],
-                    'initialization_strategy': params['initialization_strategy'],
-                    'avg_node_pot_threshold': params['avg_node_pot_threshold'],
+                    'percent_positive': percent_positive,
+                    'num_particles': sim_params.get('num_particles', -1),
+                    'cluster_strategy': rns_params.get('cluster_strategy', 'error'),
+                    'positive_cluster_threshold': rns_params.get('positive_cluster_threshold', -1),
+                    'movement_strategy': sim_params.get('movement_strategy', 'error'),
+                    'initialization_strategy': sim_params.get('initialization_strategy', 'error'),
+                    'avg_node_pot_threshold': sim_params.get('avg_node_pot_threshold', -1),
                     'step1_f1_score': 0.0,
                     'step1_precision': 0.0,
                     'step1_recall': 0.0,
@@ -410,88 +615,75 @@ class PULearningExperimentRunner:
                     'step2_precision': 0.0,
                     'step2_recall': 0.0,
                     'step2_accuracy': 0.0,
-                    'coverage': model.pcm.get_graph_coverage()[1],
-                    'fallback_rule_used': model.labeled_graph.graph.get('fallback_rule_used', False),
-                    'avg_threshold_criteria': model.labeled_graph.graph.get('avg_threshold_criteria', False),
-                    'final_iteration_count': model.labeled_graph.graph.get('final_iteration_count', 0),
-                    'graph_nodes': graph.number_of_nodes(),
-                    'graph_edges': graph.number_of_edges(),
-                    'status': 'error: insufficient reliable negatives'
-                }
-                return result
+                    'coverage': 0.0,
+                    'fallback_rule_used': False,
+                    'avg_threshold_criteria': False,
+                    'final_iteration_count': 0,
+                    'graph_nodes': graph.number_of_nodes() if graph else 0,
+                    'graph_edges': graph.number_of_edges() if graph else 0,
+                    'status': f'error: {str(e)}'
+                })
 
-            # Step 1 metrics: evaluate reliable negative purity
-            metrics = evaluate_reliable_negative_metrics(
-                graph, reliable_negatives
-            )
+        return results
 
-            # Step 2: unified SVM classification
-            predictions = classify_with_svm(graph, reliable_negatives)
-            step2_metrics = evaluate_phase2(graph, predictions)
+    def _write_live_status(self, dataset_name: str, total_tasks: int, completed: int,
+                           successful: int, failed: int, in_flight: int,
+                           elapsed_seconds: float, avg_task_time: float,
+                           eta_seconds: float, percent_positive: Optional[float],
+                           results: List[Dict], recent_task: Dict):
+        """Write live status JSON for the dashboard."""
+        import datetime
 
-            # Get final coverage from the model
-            final_coverage = model.pcm.get_graph_coverage()[1]
+        # Aggregate by num_particles
+        completed_by_particles = {}
+        best_f1_by_particles = {}
+        best_acc_by_particles = {}
+        for r in results:
+            p = str(r.get('num_particles', '?'))
+            if p not in completed_by_particles:
+                completed_by_particles[p] = 0
+                best_f1_by_particles[p] = 0.0
+                best_acc_by_particles[p] = 0.0
+            completed_by_particles[p] += 1
+            if r.get('status') == 'success':
+                best_f1_by_particles[p] = max(best_f1_by_particles[p], r.get('step1_f1_score', 0.0))
+                best_acc_by_particles[p] = max(best_acc_by_particles[p], r.get('step2_accuracy', 0.0))
 
-            fallback_rule_used = model.labeled_graph.graph.get('fallback_rule_used', False)
-            avg_threshold_criteria = model.labeled_graph.graph.get('avg_threshold_criteria', False)
-            final_iteration_count = model.labeled_graph.graph.get('final_iteration_count', 0)
+        # Maintain recent tasks list (last 15)
+        status_path = f"{self.output_dir}/live_status.json"
+        recent_tasks = []
+        try:
+            with open(status_path, 'r') as f:
+                old = json.load(f)
+                recent_tasks = old.get('recent_tasks', [])
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        recent_tasks.append(recent_task)
+        recent_tasks = recent_tasks[-15:]
 
-            # Compile results (Step 1 + Step 2 metrics)
-            result = {
-                'run_id': run_id,
-                'percent_positive': params.get('percent_positive', None),
-                'num_particles': params['num_particles'],
-                'cluster_strategy': params['cluster_strategy'],
-                'positive_cluster_threshold': params['positive_cluster_threshold'],
-                'movement_strategy': params['movement_strategy'],
-                'initialization_strategy': params['initialization_strategy'],
-                'avg_node_pot_threshold': params['avg_node_pot_threshold'],
-                'step1_f1_score': metrics['f1_score'],
-                'step1_precision': metrics['precision'],
-                'step1_recall': metrics['recall'],
-                'step1_num_reliable_negatives': metrics['num_reliable_negatives'],
-                'step2_f1': step2_metrics['f1'],
-                'step2_precision': step2_metrics['precision'],
-                'step2_recall': step2_metrics['recall'],
-                'step2_accuracy': step2_metrics['accuracy'],
-                'coverage': final_coverage,
-                'fallback_rule_used': fallback_rule_used,
-                'avg_threshold_criteria': avg_threshold_criteria,
-                'final_iteration_count': final_iteration_count,
-                'graph_nodes': graph.number_of_nodes(),
-                'graph_edges': graph.number_of_edges(),
-                'status': 'success'
-            }
+        status = {
+            'dataset': dataset_name,
+            'percent_positive': percent_positive,
+            'total_tasks': total_tasks,
+            'completed': completed,
+            'successful': successful,
+            'failed': failed,
+            'in_flight': in_flight,
+            'elapsed_seconds': round(elapsed_seconds, 1),
+            'avg_task_time': round(avg_task_time, 1),
+            'eta_seconds': round(eta_seconds, 1),
+            'last_updated': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'completed_by_particles': completed_by_particles,
+            'best_f1_by_particles': best_f1_by_particles,
+            'best_accuracy_by_particles': best_acc_by_particles,
+            'recent_tasks': recent_tasks
+        }
 
-            return result
-
-        except Exception as e:
-            result = {
-                'run_id': run_id,
-                'percent_positive': params.get('percent_positive', None),
-                'num_particles': params.get('num_particles', -1),
-                'cluster_strategy': params.get('cluster_strategy', 'error'),
-                'positive_cluster_threshold': params.get('positive_cluster_threshold', -1),
-                'movement_strategy': params.get('movement_strategy', 'error'),
-                'initialization_strategy': params.get('initialization_strategy', 'error'),
-                'avg_node_pot_threshold': params.get('avg_node_pot_threshold', -1),
-                'step1_f1_score': 0.0,
-                'step1_precision': 0.0,
-                'step1_recall': 0.0,
-                'step1_num_reliable_negatives': 0,
-                'step2_f1': 0.0,
-                'step2_precision': 0.0,
-                'step2_recall': 0.0,
-                'step2_accuracy': 0.0,
-                'coverage': 0.0,
-                'fallback_rule_used': False,
-                'avg_threshold_criteria': False,
-                'final_iteration_count': 0,
-                'graph_nodes': graph.number_of_nodes() if graph else 0,
-                'graph_edges': graph.number_of_edges() if graph else 0,
-                'status': f'error: {str(e)}'
-            }
-            return result
+        try:
+            with open(status_path, 'w') as f:
+                json.dump(status, f, indent=2)
+        except Exception:
+            pass
 
     def save_intermediate_results(self, results: List[Dict], dataset_name: str):
         """Save intermediate results to avoid losing progress."""

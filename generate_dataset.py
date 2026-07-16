@@ -74,11 +74,25 @@ def apply_scar_labeling(labels: np.ndarray, percent_positive: float) -> np.ndarr
     positive_indices = np.where(labels == 1)[0]
     num_to_label = int(len(positive_indices) * percent_positive)
     labeled_indices = np.random.choice(positive_indices, size=num_to_label, replace=False) if num_to_label > 0 else []
-    
+
     observed_labels = np.zeros_like(labels)
     if len(labeled_indices) > 0:
         observed_labels[labeled_indices] = 1
     return observed_labels
+
+
+def relabel_graph_scar(graph: nx.Graph, percent_positive: float) -> nx.Graph:
+    """
+    Re-applies SCAR labeling to an existing graph (in-place on a copy).
+    Reuses the graph structure and true_label, only changes observed_label.
+    """
+    G = graph.copy()
+    nodes = sorted(G.nodes())
+    true_labels = np.array([G.nodes[n]['true_label'] for n in nodes])
+    observed_labels = apply_scar_labeling(true_labels, percent_positive)
+    for i, node in enumerate(nodes):
+        G.nodes[node]['observed_label'] = observed_labels[i]
+    return G
 
 
 def binarize_labels(labels: np.ndarray, positive_class_label: int) -> np.ndarray:

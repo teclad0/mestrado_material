@@ -38,9 +38,9 @@ def is_cluster_positive(
     if not nodes_in_cluster:
         return False
 
-    # Use safer node access since graph nodes may have gaps after processing
-    node_attributes = dict(graph.nodes(data=True))
-    observed_labels = [node_attributes[n]['observed_label'] for n in nodes_in_cluster if n in node_attributes]
+    observed_labels = [
+        graph.nodes[n]['observed_label'] for n in nodes_in_cluster if n in graph
+    ]
 
     if strategy == 'majority':
         label_counts = Counter(observed_labels)
@@ -77,7 +77,7 @@ class ParticleCompetitionModel:
         self.p_det = 0.6
         self.delta_p = 0.4
         self.delta_v = 0.3
-        self.particles: List[Particle] = []        
+        self.particles: List[Particle] = []
         self.movement_strategy = movement_strategy
         self.initialization_strategy = initialization_strategy
         self.average_node_potential_threshold = average_node_potential_threshold
@@ -85,9 +85,11 @@ class ParticleCompetitionModel:
         self.cluster_sizes = defaultdict(int)
         self.cluster_positive_counts = defaultdict(int)
         self.patience = patience
-        self._stall_tolerance = 0.001  # Internal constant for sensitivity
+        self._stall_tolerance = 0.0015  # Internal constant for sensitivity
         self._potential_history = deque(maxlen=patience) # Tracks recent potential values
 
+        # Maintain set of free (unowned) nodes for O(1) lookup
+        self._free_nodes = set(self.graph.nodes)
 
         # Initialize graph nodes
         for node in self.graph.nodes:
@@ -95,16 +97,14 @@ class ParticleCompetitionModel:
             self.graph.nodes[node]['potential'] = 0.05
             nbrs = self.neighbors_dict[node]
             self.neighbor_degrees[node] = tuple(self.degrees[n] for n in nbrs)
-        
+
         # Initialize particles
         self.initialize_particles()
 
         # Identify positive nodes (observed_label == 1)
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
         self.positive_nodes = [
-            node for node in self.graph.nodes 
-            if node_attributes[node].get('observed_label') == 1
+            node for node in self.graph.nodes
+            if self.graph.nodes[node].get('observed_label') == 1
         ]
         if self.initialization_strategy == 'random':
             self._assigned_start_nodes = set()
@@ -210,17 +210,21 @@ class ParticleCompetitionModel:
         if old_owner == new_owner:
             return  # No change, nothing to do
 
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        is_positive = node_attributes[node].get('observed_label') == 1
+        is_positive = self.graph.nodes[node].get('observed_label') == 1
+
+        # --- Update free nodes set ---
+        if old_owner is None and new_owner is not None:
+            self._free_nodes.discard(node)
+        elif old_owner is not None and new_owner is None:
+            self._free_nodes.add(node)
 
         # --- Update state for the old owner ---
         if old_owner is not None:
-            self.owner_groups[old_owner].remove(node)
+            self.owner_groups[old_owner].discard(node)
             self.cluster_sizes[old_owner] -= 1
             if is_positive:
                 self.cluster_positive_counts[old_owner] -= 1
-            
+
             # Clean up if the cluster is now empty
             if self.cluster_sizes[old_owner] == 0:
                 self.owner_groups.pop(old_owner, None)
@@ -271,18 +275,16 @@ class ParticleCompetitionModel:
         current_node = particle.current_position
         neighbors = self.neighbors_dict.get(current_node, []).copy()
         
-        # Deterministic movement: owned neighbors
+        # Deterministic movement: owned ADJACENT nodes only (per article: movement is always to a neighbor)
         if random.random() < self.p_det:
-            # remove current node if particle is visiting again
-            owned_nodes = [n for n in particle.visited_nodes if n != current_node] 
+            owned_neighbors = [n for n in neighbors if n in particle.visited_nodes and n != current_node]
 
-            if owned_nodes:
-                if particle.node_visited_last_iteration in owned_nodes and \
+            if owned_neighbors:
+                if particle.node_visited_last_iteration in owned_neighbors and \
                     self.degrees.get(particle.node_visited_last_iteration, 0) != 1:
-                        owned_nodes.remove(particle.node_visited_last_iteration)
-                # check if there the node_visitet_last_iteration wasn't the only one visited
-                if owned_nodes:
-                    return random.choice(owned_nodes)
+                        owned_neighbors.remove(particle.node_visited_last_iteration)
+                if owned_neighbors:
+                    return random.choice(owned_neighbors)
         # Random movement: select based on strategy
         if self.movement_strategy == 'degree_weighted':
             return self._degree_weighted_choice(neighbors, current_node)
@@ -296,10 +298,11 @@ class ParticleCompetitionModel:
             try:
                 return random.choice(neighbors)
             except IndexError:
-                import ipdb; ipdb.set_trace()
+                #import ipdb; ipdb.set_trace()
+                print(f"Warning: Particle {particle.id} at node {current_node} has no neighbors to move to. Staying in place.")
         
     def update_particle(self,
-        particle: Particle, 
+        particle: Particle,
         node: Any,
     ) -> None:
         '''
@@ -309,67 +312,59 @@ class ParticleCompetitionModel:
         particle (Particle): particle
         node(Node): node the particle selected
         '''
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        current_owner = node_attributes[node]['owner']
-        current_potential = node_attributes[node]['potential']
+        node_data = self.graph.nodes[node]
+        current_owner = node_data['owner']
+        current_potential = node_data['potential']
 
         if current_owner is None:
             # Case 1: Node is free
             particle.visited_nodes.add(node)
-            self.graph.nodes[node]['owner'] = particle.id
-            self.graph.nodes[node]['potential'] = particle.potential
-            self._update_cluster_state(node, old_owner=current_owner, new_owner=particle.id)
-            
+            node_data['owner'] = particle.id
+            node_data['potential'] = particle.potential
+            self._update_cluster_state(node, old_owner=None, new_owner=particle.id)
+
         elif current_owner == particle.id:
             # Case 2: Node owned by current particle
             particle.potential = min(1, particle.potential + (1 - particle.potential) * self.delta_p)
-            self.graph.nodes[node]['potential'] = particle.potential
-            
+            node_data['potential'] = particle.potential
+
         else:
             # Case 3: Node owned by another particle
             particle.potential = particle.potential - (particle.potential - 0.05) * self.delta_p
-            new_potential = current_potential - self.delta_v
-            self.graph.nodes[node]['potential'] = max(0.05, new_potential)
-            self.graph.nodes[node]['potential'] = current_potential * (1 - self.delta_v)
-            
+            node_data['potential'] = current_potential * (1 - self.delta_v)
+
             # Remove from particle's owned nodes if present
             if node in particle.visited_nodes:
                 particle.visited_nodes.remove(node)
-                
+
             # Reset particle if potential too low
             if particle.potential <= 0.05:
                 particle.potential = 0.05
                 if free_node := self.get_free_node():
-                    old_owner_of_free_node = node_attributes[free_node]['owner']                
                     particle.visited_nodes.add(free_node)
-                    self.graph.nodes[free_node]['owner'] = particle.id                
-                    self._update_cluster_state(free_node, old_owner=old_owner_of_free_node, new_owner=particle.id)
-        
+                    self.graph.nodes[free_node]['owner'] = particle.id
+                    self._update_cluster_state(free_node, old_owner=None, new_owner=particle.id)
+
             # Free node if potential too low
-            if self.graph.nodes[node]['potential'] <= 0.05:
-                self.graph.nodes[node]['owner'] = None
+            if node_data['potential'] <= 0.05:
+                node_data['owner'] = None
                 self._update_cluster_state(node, old_owner=current_owner, new_owner=None)
 
     def get_free_node(self) -> Optional[Any]:
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        return next(
-            (n for n in self.graph.nodes if node_attributes[n]['owner'] is None),
-            None
-        )
+        if not self._free_nodes:
+            return None
+        return next(iter(self._free_nodes))
     
     def check_positive_cluster_existence(self) -> bool:
         """
         Check if the graph has at least one positive cluster using the specified strategy.
         """
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
         owner_groups = defaultdict(list)
         for node in self.graph.nodes:
-            if (owner := node_attributes[node]['owner']) is not None:
+            owner = self.graph.nodes[node]['owner']
+            if owner is not None:
                 owner_groups[owner].append(node)
-        
+
         return any(
             len(nodes) >= 3 and is_cluster_positive(
                 self.graph,
@@ -392,9 +387,9 @@ class ParticleCompetitionModel:
 
     def has_unowned_nodes(self) -> bool:
         '''
-        Check if the graph has any node with an owner
+        Check if the graph has any unowned nodes.
         '''
-        return any(data['owner'] is None for _, data in self.graph.nodes(data=True))
+        return len(self._free_nodes) > 0
 
     def graph_without_owners(self) -> bool:
         '''
@@ -455,7 +450,6 @@ class ParticleCompetitionModel:
             # This check runs only after the history deque is full
             if len(self._potential_history) == self.patience:
                 potential_change = np.std(self._potential_history)
-                #print(f"Potential change over last {self.patience} iterations: {potential_change:.6f}")
                 if potential_change < self._stall_tolerance:
                     print(
                         f"Stopping simulation: Potential has converged. Change is below tolerance "
@@ -478,21 +472,16 @@ class ParticleCompetitionModel:
         Ensure cluster state is properly initialized after simulation ends.
         This method recalculates cluster_positive_counts to ensure accuracy.
         """
-        # Clear existing counts and recalculate
         self.cluster_positive_counts.clear()
-        
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        
-        # Recalculate positive counts for each cluster
+
         for owner, nodes in self.owner_groups.items():
-            positive_count = sum(1 for node in nodes if node_attributes[node].get('observed_label') == 1)
+            positive_count = sum(
+                1 for node in nodes if self.graph.nodes[node].get('observed_label') == 1
+            )
             self.cluster_positive_counts[owner] = positive_count
-    
+
     def visualize_communities(self, G: nx.Graph) -> None:
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        color_map = [node_attributes[n]['owner'] for n in self.graph.nodes]
+        color_map = [self.graph.nodes[n]['owner'] for n in self.graph.nodes]
         nx.draw(self.graph, node_color=color_map, with_labels=True)
         plt.show()
 
@@ -582,13 +571,8 @@ class ReliableNegativeSelection:
         self.graph.graph['fallback_rule_used'] = fallback_rule_used
 
     def calculate_dissimilarity(self):
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        
         label_clusters = defaultdict(list)
-        #for node, data in tqdm(self.graph.nodes(data=True), desc="Grouping nodes by cluster label", total=self.graph.number_of_nodes()):
-        #for node, data in self.graph.nodes(data=True):
-        for node, data in node_attributes.items():
+        for node, data in self.graph.nodes(data=True):
             cluster_label = data.get('cluster_positive')
             if cluster_label is not None:
                 label_clusters[cluster_label].append(node)
@@ -620,14 +604,12 @@ class ReliableNegativeSelection:
                     self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
 
     def rank_nodes_dissimilarity(self, num_neg: int = 10):
-        # Use safer node access since graph nodes may have gaps after processing
-        node_attributes = dict(self.graph.nodes(data=True))
-        
         # Filter for nodes in negative clusters that have a dissimilarity score
         data = [
-            (node, node_attributes[node].get('dissimilarity'))
+            (node, self.graph.nodes[node].get('dissimilarity'))
             for node in self.graph.nodes
-            if node_attributes[node].get('cluster_positive') == 0 and node_attributes[node].get('dissimilarity') is not None
+            if self.graph.nodes[node].get('cluster_positive') == 0
+            and self.graph.nodes[node].get('dissimilarity') is not None
         ]
         
         # Only return results if we found at least num_neg nodes

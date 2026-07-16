@@ -608,8 +608,304 @@ class ExperimentResultsAnalyzer:
         plt.close()
         
         print(f"  ✓ Saved: {filename}")
-    
-    def generate_statistical_summary(self, 
+
+    def generate_publication_grid_chart(self,
+                                        save_dir: str = "analysis_charts",
+                                        filename: str = "publication_f1_vs_particles_grid",
+                                        figsize: Tuple[int, int] = (12, 14)) -> None:
+        """
+        Generate a publication-ready 3×2 grid: one subplot per dataset (5 datasets),
+        strategies as lines, shared legend in the 6th cell.
+        Saves both PDF (for LaTeX) and JPG versions.
+        """
+        print("\nGenerating publication grid chart (3×2, per-dataset, strategies as lines)...")
+
+        save_path = Path(save_dir)
+        save_path.mkdir(exist_ok=True)
+
+        # Support pubmed in addition to the default 4 datasets
+        all_datasets = list(self.datasets) + [d for d in ['pubmed'] if d not in self.datasets]
+
+        # Column positions that are stable regardless of total column count (CSV row 3 = header):
+        #   0:percent_positive  1:num_particles  2:cluster_strategy  3:positive_cluster_threshold
+        #   4:movement_strategy  5:initialization_strategy  6:avg_node_pot_threshold
+        #   7:step1_f1_score_mean  8:step1_f1_score_std
+        COLS = {
+            'percent_positive': 0, 'num_particles': 1, 'cluster_strategy': 2,
+            'positive_cluster_threshold': 3, 'movement_strategy': 4,
+            'initialization_strategy': 5, 'avg_node_pot_threshold': 6,
+            'f1_score_mean': 7, 'f1_score_std': 8,
+        }
+
+        def _load_summary(fp):
+            raw = pd.read_csv(fp, skiprows=3, header=None)
+            df = raw.iloc[:, list(COLS.values())].copy()
+            df.columns = list(COLS.keys())
+            for col in ('num_particles', 'f1_score_mean', 'f1_score_std',
+                        'positive_cluster_threshold', 'avg_node_pot_threshold'):
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+
+        for dataset in all_datasets:
+            if dataset not in self.summary_data:
+                fp = self.results_dir / f"{dataset}_summary_results.csv"
+                if fp.exists():
+                    try:
+                        self.summary_data[dataset] = _load_summary(fp)
+                        print(f"  ✓ Loaded {dataset} on demand")
+                    except Exception as e:
+                        print(f"  ✗ Could not load {dataset}: {e}")
+            elif 'f1_score_mean' not in self.summary_data[dataset].columns:
+                # Cached data has wrong columns (old loader) — reload
+                fp = self.results_dir / f"{dataset}_summary_results.csv"
+                if fp.exists():
+                    try:
+                        self.summary_data[dataset] = _load_summary(fp)
+                        print(f"  ✓ Reloaded {dataset} (column fix)")
+                    except Exception as e:
+                        print(f"  ✗ Could not reload {dataset}: {e}")
+
+        # Only plot datasets that have data
+        datasets_to_plot = [d for d in all_datasets if d in self.summary_data]
+        print(f"  Datasets in grid: {datasets_to_plot}")
+
+        # Aggregate across all thresholds and avg_node_pot_threshold
+        raw = {d: self.summary_data[d] for d in datasets_to_plot}
+        aggregated = self.aggregate_data_by_particles(raw, include_threshold_agg=True)
+
+        # Strategy definitions — color + linestyle + marker
+        strategy_styles = {
+            ('random',          'uniform'):          ('#0072B2', '-',  'o', 'Init: Random, Move: Uniform'),
+            ('random',          'degree_weighted'):  ('#D55E00', '--', 's', 'Init: Random, Move: Degree-Weighted'),
+            ('degree_weighted', 'uniform'):          ('#009E73', '-.', '^', 'Init: Degree-Weighted, Move: Uniform'),
+            ('degree_weighted', 'degree_weighted'):  ('#CC79A7', ':',  'D', 'Init: Degree-Weighted, Move: Degree-Weighted'),
+        }
+
+        # Global y-axis range for comparability across panels
+        all_f1 = []
+        for df in aggregated.values():
+            all_f1.extend(df['f1_score_mean'].dropna().tolist())
+        y_min = max(0.0, np.percentile(all_f1, 2) - 0.03) if all_f1 else 0.0
+        y_max = min(1.0, np.percentile(all_f1, 98) + 0.03) if all_f1 else 1.0
+
+        # Build 2×3 grid (3 datasets top row, 2 + legend bottom row)
+        n_datasets = len(datasets_to_plot)
+        n_rows, n_cols = 2, 3
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+        axes_flat = axes.flatten()
+
+        legend_handles = []
+        legend_labels  = []
+
+        for idx, dataset in enumerate(datasets_to_plot):
+            ax = axes_flat[idx]
+            df = aggregated[dataset]
+
+            for (init_s, move_s), (color, ls, marker, label) in strategy_styles.items():
+                mask = (df['initialization_strategy'] == init_s) & (df['movement_strategy'] == move_s)
+                subset = df[mask].sort_values('num_particles')
+                if subset.empty:
+                    continue
+
+                line, = ax.plot(
+                    subset['num_particles'].values,
+                    subset['f1_score_mean'].values,
+                    color=color, linestyle=ls, marker=marker,
+                    linewidth=2, markersize=5,
+                    label=label,
+                )
+                if idx == 0 and label not in legend_labels:
+                    legend_handles.append(line)
+                    legend_labels.append(label)
+
+            ax.set_title(dataset.upper(), fontsize=13, fontweight='bold')
+            ax.set_xlabel('Number of Particles', fontsize=10)
+            ax.set_ylabel('F1 Score', fontsize=10)
+            ax.set_ylim(y_min, y_max)
+            ax.grid(True, alpha=0.25, linestyle='--')
+            ax.tick_params(labelsize=9)
+
+        # 6th cell: legend panel
+        legend_ax = axes_flat[n_datasets]
+        legend_ax.axis('off')
+        legend_ax.legend(
+            legend_handles, legend_labels,
+            loc='center', fontsize=11,
+            frameon=True, framealpha=0.9,
+            title='Particle Strategy', title_fontsize=12,
+            handlelength=3, handleheight=1.2,
+        )
+
+        # Hide any remaining empty axes beyond the legend
+        for idx in range(n_datasets + 1, n_rows * n_cols):
+            axes_flat[idx].set_visible(False)
+
+        fig.suptitle(
+            'F1 Score vs Number of Particles\n'
+            '(Aggregated across all thresholds)',
+            fontsize=14, fontweight='bold', y=1.01
+        )
+        plt.tight_layout()
+
+        for ext in ('pdf', 'jpg'):
+            out = save_path / f"{filename}.{ext}"
+            dpi = 300 if ext == 'jpg' else None
+            fig.savefig(out, dpi=dpi, bbox_inches='tight')
+            print(f"  ✓ Saved: {out.name}")
+
+        plt.close()
+
+    def generate_publication_pot_threshold_grid(self,
+                                                save_dir: str = "analysis_charts",
+                                                filename: str = "publication_f1_vs_pot_threshold_grid",
+                                                figsize: Tuple[int, int] = (12, 14)) -> None:
+        """
+        Publication-ready 3×2 grid: one subplot per dataset, lines = number of particles,
+        x-axis = avg_node_pot_threshold, aggregated across all strategies.
+        Saves both PDF (for LaTeX) and JPG versions.
+        """
+        print("\nGenerating publication pot-threshold grid chart...")
+
+        save_path = Path(save_dir)
+        save_path.mkdir(exist_ok=True)
+
+        all_datasets = list(self.datasets) + [d for d in ['pubmed'] if d not in self.datasets]
+
+        # Column positions (stable across CSV versions)
+        COLS = {
+            'percent_positive': 0, 'num_particles': 1, 'cluster_strategy': 2,
+            'positive_cluster_threshold': 3, 'movement_strategy': 4,
+            'initialization_strategy': 5, 'avg_node_pot_threshold': 6,
+            'f1_score_mean': 7, 'f1_score_std': 8,
+        }
+
+        def _load_summary(fp):
+            raw = pd.read_csv(fp, skiprows=3, header=None)
+            df = raw.iloc[:, list(COLS.values())].copy()
+            df.columns = list(COLS.keys())
+            for col in ('num_particles', 'f1_score_mean', 'f1_score_std',
+                        'positive_cluster_threshold', 'avg_node_pot_threshold'):
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            return df
+
+        for dataset in all_datasets:
+            if dataset not in self.summary_data:
+                fp = self.results_dir / f"{dataset}_summary_results.csv"
+                if fp.exists():
+                    try:
+                        self.summary_data[dataset] = _load_summary(fp)
+                        print(f"  ✓ Loaded {dataset} on demand")
+                    except Exception as e:
+                        print(f"  ✗ Could not load {dataset}: {e}")
+            elif 'f1_score_mean' not in self.summary_data[dataset].columns:
+                fp = self.results_dir / f"{dataset}_summary_results.csv"
+                if fp.exists():
+                    try:
+                        self.summary_data[dataset] = _load_summary(fp)
+                        print(f"  ✓ Reloaded {dataset} (column fix)")
+                    except Exception as e:
+                        print(f"  ✗ Could not reload {dataset}: {e}")
+
+        datasets_to_plot = [d for d in all_datasets if d in self.summary_data]
+        print(f"  Datasets in grid: {datasets_to_plot}")
+
+        # Aggregate across all strategies and positive_cluster_threshold,
+        # keeping num_particles and avg_node_pot_threshold as grouping dimensions
+        aggregated = {}
+        for dataset in datasets_to_plot:
+            df = self.summary_data[dataset]
+            grp = df.groupby(['num_particles', 'avg_node_pot_threshold']).agg(
+                f1_score_mean=('f1_score_mean', 'mean'),
+            ).reset_index()
+            aggregated[dataset] = grp
+            print(f"  {dataset}: {len(grp)} combinations")
+
+        particle_counts = sorted(aggregated[datasets_to_plot[0]]['num_particles'].unique())
+
+        # Sequential color palette + distinct linestyle + marker
+        cmap = plt.cm.Blues
+        n = len(particle_counts)
+        colors     = [cmap(0.3 + 0.7 * i / (n - 1)) for i in range(n)]
+        linestyles = ['-', '--', '-.', ':', '-', '--']
+        markers    = ['o', 's', '^', 'D', 'v', 'P']
+
+        particle_style = {
+            int(p): (colors[i], linestyles[i], markers[i], f'{int(p)} particles')
+            for i, p in enumerate(particle_counts)
+        }
+
+        # Global y-axis range
+        all_f1 = []
+        for df in aggregated.values():
+            all_f1.extend(df['f1_score_mean'].dropna().tolist())
+        y_min = max(0.0, np.percentile(all_f1, 2) - 0.03) if all_f1 else 0.0
+        y_max = min(1.0, np.percentile(all_f1, 98) + 0.03) if all_f1 else 1.0
+
+        # Build 2×3 grid (3 datasets top row, 2 + legend bottom row)
+        n_datasets = len(datasets_to_plot)
+        fig, axes = plt.subplots(2, 3, figsize=figsize)
+        axes_flat = axes.flatten()
+
+        legend_handles = []
+        legend_labels  = []
+
+        for idx, dataset in enumerate(datasets_to_plot):
+            ax = axes_flat[idx]
+            df = aggregated[dataset]
+
+            for p in particle_counts:
+                color, ls, marker, label = particle_style[int(p)]
+                subset = df[df['num_particles'] == p].sort_values('avg_node_pot_threshold')
+                if subset.empty:
+                    continue
+
+                line, = ax.plot(
+                    subset['avg_node_pot_threshold'].values,
+                    subset['f1_score_mean'].values,
+                    color=color, linestyle=ls, marker=marker,
+                    linewidth=2, markersize=5, label=label,
+                )
+                if idx == 0 and label not in legend_labels:
+                    legend_handles.append(line)
+                    legend_labels.append(label)
+
+            ax.set_title(dataset.upper(), fontsize=13, fontweight='bold')
+            ax.set_xlabel('avg_pot_threshold', fontsize=10)
+            ax.set_ylabel('F1 Score', fontsize=10)
+            ax.set_ylim(y_min, y_max)
+            ax.grid(True, alpha=0.25, linestyle='--')
+            ax.tick_params(labelsize=9)
+
+        # 6th cell: legend panel
+        legend_ax = axes_flat[n_datasets]
+        legend_ax.axis('off')
+        legend_ax.legend(
+            legend_handles, legend_labels,
+            loc='center', fontsize=11,
+            frameon=True, framealpha=0.9,
+            title='Number of Particles', title_fontsize=12,
+            handlelength=3, handleheight=1.2,
+        )
+
+        for idx in range(n_datasets + 1, 2 * 3):
+            axes_flat[idx].set_visible(False)
+
+        fig.suptitle(
+            'F1 Score vs avg_pot_threshold\n'
+            '(Aggregated across all strategies)',
+            fontsize=14, fontweight='bold', y=1.01
+        )
+        plt.tight_layout()
+
+        for ext in ('pdf', 'jpg'):
+            out = save_path / f"{filename}.{ext}"
+            dpi = 300 if ext == 'jpg' else None
+            fig.savefig(out, dpi=dpi, bbox_inches='tight')
+            print(f"  ✓ Saved: {out.name}")
+
+        plt.close()
+
+    def generate_statistical_summary(self,
                                    threshold: float = 0.1,
                                    filter_by_threshold: bool = True,
                                    save_dir: str = "analysis_charts") -> None:
@@ -761,7 +1057,9 @@ class ExperimentResultsAnalyzer:
         self.generate_f1_vs_particles_charts(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
         self.generate_heatmap_charts(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
         self.generate_parameter_comparison_chart(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
-        
+        self.generate_publication_grid_chart(save_dir=save_dir)
+        self.generate_publication_pot_threshold_grid(save_dir=save_dir)
+
         # Generate statistical summary
         self.generate_statistical_summary(threshold=threshold, filter_by_threshold=filter_by_threshold, save_dir=save_dir)
         

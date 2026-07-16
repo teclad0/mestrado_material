@@ -209,14 +209,33 @@ Examples:
     print(f"Quick test mode: {args.quick_test}")
     print("="*80)
     
-    # Calculate total experiments
+    # Calculate total experiments (naive vs optimized)
     total_combinations = 1
     for param_values in default_params.values():
         total_combinations *= len(param_values)
-    total_experiments = total_combinations * args.n_runs * len(args.dataset)
-    
-    print(f"Parameter combinations: {total_combinations}")
-    print(f"Total experiments: {total_experiments}")
+    naive_total = total_combinations * args.n_runs * len(args.dataset)
+
+    # Calculate optimized counts
+    sim_params_count = 1
+    for k in ['num_particles', 'movement_strategy', 'initialization_strategy', 'avg_node_pot_threshold']:
+        if k in default_params:
+            sim_params_count *= len(default_params[k])
+
+    # RNS combos: majority (1) + percentage × thresholds
+    strategies = default_params.get('cluster_strategy', ['percentage'])
+    thresholds = default_params.get('positive_cluster_threshold', [0.5])
+    rns_count = 0
+    for s in strategies:
+        rns_count += 1 if s == 'majority' else len(thresholds)
+
+    pct_pos_count = len(default_params.get('percent_positive', [None]))
+    optimized_simulations = sim_params_count * args.n_runs * len(args.dataset) * pct_pos_count
+    optimized_evaluations = optimized_simulations * rns_count
+
+    print(f"Naive parameter combinations: {total_combinations}")
+    print(f"Naive total experiments: {naive_total}")
+    print(f"Optimized: {optimized_simulations} simulations × {rns_count} RNS evals = {optimized_evaluations} results")
+    print(f"Simulation reduction: {(1 - optimized_simulations / naive_total) * 100:.0f}% fewer expensive runs")
     print(f"Reliable negatives per experiment: {args.num_neg}")
     
     # Show parallelization info

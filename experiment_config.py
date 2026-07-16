@@ -79,7 +79,7 @@ PARAMETER_RANGES = {
 
     # Reliable Negative Selection parameters
     'cluster_strategy': ['majority', 'percentage'],
-    'positive_cluster_threshold': [0.1, 0.2, 0.3, 0.4, 0.5],
+    'positive_cluster_threshold': [0],
 
     # Movement and initialization parameters
     'movement_strategy': ['uniform', 'degree_weighted'],

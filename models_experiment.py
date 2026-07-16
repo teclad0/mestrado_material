@@ -190,17 +190,15 @@ def evaluate_phase2(graph, predictions, true_label_key='true_label'):
         'accuracy': sum(1 for t, p in zip(y_true, y_pred) if t == p) / len(y_true)
     }
 
-def classify_with_svm(graph, reliable_negatives, max_iter: int = 10, threshold: float = 0.5) -> Dict[Any, int]:
+def classify_with_svm(graph, reliable_negatives) -> Dict[Any, int]:
     """
     Unified Step 2 classifier for all PU Learning models.
-    Trains an iterative SVM on P (positive seeds) + RN (reliable negatives),
+    Trains an SVM on P (positive seeds) + RN (reliable negatives),
     then classifies all remaining unlabeled nodes.
 
     Args:
         graph: NetworkX graph with node attributes 'features' and 'observed_label'
         reliable_negatives: List of node IDs identified as reliable negatives
-        max_iter: Maximum SVM iterations for expanding the negative set
-        threshold: Decision function threshold for adding new negatives
 
     Returns:
         dict: {node_id: predicted_label} for all unlabeled nodes
@@ -215,44 +213,26 @@ def classify_with_svm(graph, reliable_negatives, max_iter: int = 10, threshold: 
     if not pos_set or not rn_set:
         return {}
 
-    # Build feature matrix
-    features = {node: np.array(node_attributes[node]['features']) for node in node_list}
+    # Build training set: positives + reliable negatives
+    train_nodes = list(pos_set) + list(rn_set)
+    train_X = np.array([np.array(node_attributes[n]['features']) for n in train_nodes])
+    train_y = np.array([1] * len(pos_set) + [0] * len(rn_set))
 
-    # Iterative SVM: expand RN set each round
-    current_rn = set(rn_set)
-    svm = None
+    scaler = StandardScaler()
+    train_X_scaled = scaler.fit_transform(train_X)
 
-    for _ in range(max_iter):
-        train_nodes = list(pos_set) + list(current_rn)
-        train_X = np.array([features[n] for n in train_nodes])
-        train_y = np.array([1] * len(pos_set) + [0] * len(current_rn))
+    svm = SVC(kernel='rbf', class_weight='balanced')
+    svm.fit(train_X_scaled, train_y)
 
-        scaler = StandardScaler()
-        train_X_scaled = scaler.fit_transform(train_X)
+    # Classify all unlabeled nodes (excluding the reliable negatives already labeled)
+    remaining = list(all_unlabeled - rn_set)
 
-        svm = SVC(kernel='rbf', class_weight='balanced')
-        svm.fit(train_X_scaled, train_y)
-
-        remaining = list(all_unlabeled - current_rn)
-        if not remaining:
-            break
-
-        remaining_X = scaler.transform(np.array([features[n] for n in remaining]))
-        decisions = svm.decision_function(remaining_X)
-        new_neg = [remaining[i] for i, d in enumerate(decisions) if d < -threshold]
-
-        if not new_neg:
-            break
-        current_rn.update(new_neg)
-
-    # Final predictions
     predictions = {}
-    for node in current_rn:
+    for node in rn_set:
         predictions[node] = 0
 
-    remaining = list(all_unlabeled - current_rn)
-    if remaining and svm is not None:
-        remaining_X = scaler.transform(np.array([features[n] for n in remaining]))
+    if remaining:
+        remaining_X = scaler.transform(np.array([np.array(node_attributes[n]['features']) for n in remaining]))
         pred = svm.predict(remaining_X)
         for node, label in zip(remaining, pred):
             predictions[node] = int(label)
