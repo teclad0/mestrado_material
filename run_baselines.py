@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 
 warnings.filterwarnings('ignore')
 
@@ -155,34 +156,94 @@ def main():
     completed = 0
     t_start = time.time()
 
-    with ProcessPoolExecutor(max_workers=n_jobs) as executor:
-        futures = {executor.submit(_worker, task): task for task in tasks}
+    # Use 'spawn' instead of the default 'fork': by this point torch has already
+    # been used in the main process (e.g. DatasetManager's torch.manual_seed call),
+    # which can leave PyTorch's internal thread pool holding a lock at fork time —
+    # forked workers then deadlock forever waiting on it. spawn starts clean
+    # interpreters instead, avoiding the inherited-lock issue entirely.
+    mp_context = multiprocessing.get_context('spawn')
 
-        for future in as_completed(futures):
-            task = futures[future]
-            model_name, dataset, pct, run = task
-            completed += 1
+    # A worker can be killed abruptly (e.g. OOM) independently of any task's own
+    # correctness. When that happens every other future already queued on that
+    # same pool — including ones that hadn't even started — raises
+    # BrokenProcessPool too, not just the task that actually died. Treating that
+    # as a normal per-task error would wrongly mark hundreds of never-run tasks
+    # as failed. Instead, on a broken pool we start a fresh one and retry
+    # whatever's left, up to a small retry cap per task.
+    #
+    # Submitting all tasks to a single long-lived executor makes the blast radius
+    # of one bad task the *entire remaining task list* (everything still queued
+    # inside that executor, not just what's concurrently running). Batching caps
+    # that blast radius at BATCH_SIZE: each batch gets its own executor, so a
+    # break only poisons the handful of tasks in that batch.
+    retry_counts = {task: 0 for task in tasks}
+    max_retries = 3
+    pool_restarts = 0
+
+    BATCH_SIZE = 8 * n_jobs
+    batches = [tasks[i:i + BATCH_SIZE] for i in range(0, len(tasks), BATCH_SIZE)]
+
+    for batch in batches:
+        pending = list(batch)
+
+        while pending:
+            done_this_round = set()
+            broke = False
 
             try:
-                res = future.result()
-            except Exception as e:
-                res = {'model': model_name, 'dataset': dataset,
-                       'percent_positive': pct, 'run': run, 'error': str(e)}
+                with ProcessPoolExecutor(max_workers=n_jobs, mp_context=mp_context) as executor:
+                    futures = {executor.submit(_worker, task): task for task in pending}
 
-            if res is None:
-                pct_str = f"{int(pct * 100)}pct"
-                print(f"  [{completed}/{len(tasks)}] SKIP {model_name} {dataset}/{pct_str} run={run} — file not found")
-            elif 'error' in res:
-                pct_str = f"{int(pct * 100)}pct"
-                print(f"  [{completed}/{len(tasks)}] ERROR {model_name} {dataset}/{pct_str} run={run}: {res['error']}")
-                results.append(res)
-            else:
-                elapsed = time.time() - t_start
-                pct_str = f"{int(pct * 100)}pct"
-                print(f"  [{completed}/{len(tasks)}] {model_name:6s} {dataset:8s}/{pct_str} run={run}: "
-                      f"P1={res['phase1_f1']:.3f} P2={res['phase2_f1']:.3f} "
-                      f"({res['phase1_time_s'] + res['phase2_time_s']:.1f}s) | total={elapsed:.0f}s")
-                results.append(res)
+                    for future in as_completed(futures):
+                        task = futures[future]
+                        model_name, dataset, pct, run = task
+
+                        try:
+                            res = future.result()
+                        except BrokenProcessPool:
+                            raise
+                        except Exception as e:
+                            res = {'model': model_name, 'dataset': dataset,
+                                   'percent_positive': pct, 'run': run, 'error': str(e)}
+
+                        done_this_round.add(task)
+                        completed += 1
+                        elapsed = time.time() - t_start
+                        pct_str = f"{int(pct * 100)}pct"
+
+                        if res is None:
+                            print(f"  [{completed}/{len(tasks)}] SKIP {model_name} {dataset}/{pct_str} run={run} — file not found")
+                        elif 'error' in res:
+                            print(f"  [{completed}/{len(tasks)}] ERROR {model_name} {dataset}/{pct_str} run={run}: {res['error']}")
+                            results.append(res)
+                        else:
+                            print(f"  [{completed}/{len(tasks)}] {model_name:6s} {dataset:8s}/{pct_str} run={run}: "
+                                  f"P1={res['phase1_f1']:.3f} P2={res['phase2_f1']:.3f} "
+                                  f"({res['phase1_time_s'] + res['phase2_time_s']:.1f}s) | total={elapsed:.0f}s")
+                            results.append(res)
+
+            except BrokenProcessPool:
+                broke = True
+
+            pending = [t for t in pending if t not in done_this_round]
+
+            if broke and pending:
+                pool_restarts += 1
+                still_pending = []
+                for t in pending:
+                    retry_counts[t] += 1
+                    if retry_counts[t] <= max_retries:
+                        still_pending.append(t)
+                    else:
+                        model_name, dataset, pct, run = t
+                        completed += 1
+                        print(f"  [{completed}/{len(tasks)}] ERROR {model_name} {dataset}/{int(pct*100)}pct run={run}: "
+                              f"exceeded {max_retries} retries after BrokenProcessPool")
+                        results.append({'model': model_name, 'dataset': dataset,
+                                         'percent_positive': pct, 'run': run,
+                                         'error': f'exceeded {max_retries} retries after BrokenProcessPool'})
+                print(f"  [pool restart #{pool_restarts}] retrying {len(still_pending)} task(s)")
+                pending = still_pending
 
     if results:
         df = pd.DataFrame(results)
