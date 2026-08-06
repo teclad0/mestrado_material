@@ -578,30 +578,40 @@ class ReliableNegativeSelection:
                 label_clusters[cluster_label].append(node)
 
         positive_nodes = label_clusters.get(1, [])
+        negative_nodes = label_clusters.get(0, [])
         if not positive_nodes:
             print("Warning: No positive clusters found. Cannot calculate dissimilarity.")
             return
-        
-        if self.dissimilarity_strategy == 'shortest_path':
-            # --- Store distances from each positive node ---
-            positive_node_distances = {}
-#            for p_node in tqdm(positive_nodes, desc="Running SSSP from positive nodes", total=len(positive_nodes)):
-            for p_node in positive_nodes:
-                # This gives {node: distance_from_p_node, ...}
-                positive_node_distances[p_node] = nx.single_source_shortest_path_length(self.graph, p_node)
 
-            # --- Calculate mean dissimilarity for each negative node ---
-            #for n_node in tqdm(label_clusters.get(0, []), desc="Calculating mean dissimilarity", total=len(label_clusters.get(0, []))):
-            for n_node in label_clusters.get(0, []):
-                distances = []
+        if self.dissimilarity_strategy == 'shortest_path':
+            # Mean shortest-path distance from each negative-cluster node to the
+            # positive-cluster nodes. Source the SSSP traversal from whichever
+            # side (positive or negative cluster) is smaller, and never hold more
+            # than one SSSP result dict in memory at a time. Storing one full
+            # distance dict per positive node simultaneously (the previous
+            # approach) is O(P x N) memory -- ~2GB+ on pubmed at 25% positive,
+            # enough to trigger an OOM kill during the full experiment sweep.
+            if len(negative_nodes) <= len(positive_nodes):
+                positive_set = set(positive_nodes)
+                for n_node in negative_nodes:
+                    distances_from_n = nx.single_source_shortest_path_length(self.graph, n_node)
+                    distances = [d for node, d in distances_from_n.items() if node in positive_set]
+                    if distances:
+                        self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
+            else:
+                negative_set = set(negative_nodes)
+                dist_sum = {n_node: 0.0 for n_node in negative_nodes}
+                dist_count = {n_node: 0 for n_node in negative_nodes}
                 for p_node in positive_nodes:
-                    # Look up the pre-computed distance
-                    dist = positive_node_distances[p_node].get(n_node, float('inf'))
-                    if dist != float('inf'):
-                        distances.append(dist)
-                
-                if distances:
-                    self.graph.nodes[n_node]['dissimilarity'] = np.mean(distances)
+                    distances_from_p = nx.single_source_shortest_path_length(self.graph, p_node)
+                    for node, d in distances_from_p.items():
+                        if node in negative_set:
+                            dist_sum[node] += d
+                            dist_count[node] += 1
+
+                for n_node in negative_nodes:
+                    if dist_count[n_node] > 0:
+                        self.graph.nodes[n_node]['dissimilarity'] = dist_sum[n_node] / dist_count[n_node]
 
     def rank_nodes_dissimilarity(self, num_neg: int = 10):
         # Filter for nodes in negative clusters that have a dissimilarity score
