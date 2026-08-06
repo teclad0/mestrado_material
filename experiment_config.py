@@ -52,7 +52,14 @@ DATASET_CONFIG = {
 # BASELINE MODELS CONFIGURATION
 # ============================================================================
 BASELINE_CONFIG = {
-    'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'pubmed'],
+    # pubmed dropped from the active benchmark: the colleague's dissertation (source
+    # for this project's baseline comparisons) uses the full 19,717-node graph with
+    # no subsampling, and that graph's size makes PU_LP's dense-affinity Phase-2 step
+    # OOM on this machine (~3.1GB just for the affinity matrix). Rather than deviate
+    # from the colleague's methodology with an arbitrary subsample, pubmed is
+    # replaced with Amazon Photo (7650 nodes) — also used in the same dissertation,
+    # full graph, and small enough to run here.
+    'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'amazon_photo'],
     'percent_positive': [0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25],
     'num_neg': {
         'cora': 200,
@@ -60,6 +67,7 @@ BASELINE_CONFIG = {
         'mnist': 300,
         'twitch': 200,
         'pubmed': 200,
+        'amazon_photo': 200,
     },
     'models': {
         'RCSVM': {'alpha': 0.7, 'beta': 0.3},
@@ -142,6 +150,13 @@ PULPC_DEFAULT_PARAMS = {
             'positive_cluster_threshold': 0.1
         },
         'num_neg': 300
+    },
+    'amazon_photo': {
+        'rns_params': {
+            'cluster_strategy': 'percentage',
+            'positive_cluster_threshold': 0.1
+        },
+        'num_neg': 200
     }
 }
 
@@ -163,7 +178,18 @@ DATASET_GEN_PARAMS = {
         'mst': False
     },
     'pubmed': {
+        # Full graph, matching the colleague's dissertation (no cited subsample size).
+        # Not in BASELINE_CONFIG['datasets'] currently — PU_LP's Phase-2 dense-affinity
+        # LabelPropagation OOMs on this machine at pubmed's full 19,717 nodes. Kept
+        # here for whenever this runs on a machine with enough RAM.
         'positive_class_label': 2,
+        'use_original_edges': True,
+        'mst': False
+    },
+    'amazon_photo': {
+        # Full graph (7650 nodes), matching the colleague's dissertation. positive_class_label=6
+        # is that dissertation's choice (highest-frequency class, ~25.4% positive).
+        'positive_class_label': 6,
         'use_original_edges': True,
         'mst': False
     },

@@ -14,7 +14,7 @@ from models import MCLS
 
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
-    load_mnist_scar
+    load_mnist_scar, load_amazon_photo_scar
 )
 
 class DatasetManager:    
@@ -47,6 +47,8 @@ class DatasetManager:
             graph = load_mnist_scar(**dataset_params)
         elif dataset_name == 'pubmed':
             graph = load_pubmed_scar(**dataset_params)
+        elif dataset_name == 'amazon_photo':
+            graph = load_amazon_photo_scar(**dataset_params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
         
@@ -81,13 +83,15 @@ class DatasetManager:
         
         return filepath
     
-    def load_graph(self, filename: str) -> nx.Graph:
+    @staticmethod
+    def load_graph(filename: str) -> nx.Graph:
         """Load a NetworkX graph from file."""
         filepath = os.path.join(filename)
         with open(filepath, 'rb') as f:
             return pickle.load(f)
-    
-    def get_data_for_mcls(self, graph: nx.Graph):
+
+    @staticmethod
+    def get_data_for_mcls(graph: nx.Graph):
         """Get data in the format MCLS expects."""
         node_list = sorted(list(graph.nodes()))
         features = np.array([graph.nodes[node]['features'] for node in node_list])
@@ -107,7 +111,8 @@ class DatasetManager:
         
         return SimpleData(features, positive_indices, unlabeled_indices)
     
-    def get_data_for_lp_pul(self, graph: nx.Graph):
+    @staticmethod
+    def get_data_for_lp_pul(graph: nx.Graph):
         """Get data in the format LP_PUL expects (PyTorch Geometric Data)."""
         node_list = sorted(list(graph.nodes()))
         node_to_idx = {node: i for i, node in enumerate(node_list)}

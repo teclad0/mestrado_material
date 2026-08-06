@@ -9,7 +9,7 @@ from sklearn.model_selection import StratifiedShuffleSplit
 
 # --- PyTorch Geometric Dependency ---
 try:
-    from torch_geometric.datasets import Planetoid
+    from torch_geometric.datasets import Planetoid, Amazon
     from torch_geometric.utils import to_networkx
 except ImportError:
     print("PyTorch Geometric not found. Please install it with 'pip install torch torch-geometric'")
@@ -113,25 +113,23 @@ def build_knn_graph_from_features(features: np.ndarray, k: int = 10) -> nx.Graph
 
 # --- Dataset Loaders ---
 
-def _load_planetoid_dataset(
+def _load_pyg_graph_dataset(
     name: str,
+    data,
     positive_class_label: int,
     percent_positive: float,
     use_original_edges: bool,
     k: int,
     mst: bool,
     n_samples: int,
-    data_dir: str
 ) -> nx.Graph:
     """
-    Generic loader for Planetoid datasets (Cora, CiteSeer) with robust attribute handling.
+    Generic loader for any already-loaded PyG Data graph (Planetoid's Cora/CiteSeer/
+    PubMed, Amazon's Photo/Computers, etc.) with robust attribute handling.
     """
     if to_networkx is None:
         raise ImportError("PyTorch Geometric is required for this function.")
-        
-    print(f"Loading {name} dataset...")
-    dataset = Planetoid(root=data_dir, name=name)
-    data = dataset[0]
+
     G = to_networkx(data, to_undirected=True)
     all_features = data.x.numpy()
     all_labels = data.y.numpy()
@@ -147,20 +145,33 @@ def _load_planetoid_dataset(
             G = _handle_graph_connectivity(G_knn, mst=mst, features=all_features)
         else:
             G = G_knn
-    
+
     # --- Step 2: Then, perform sampling on the connected graph ---
+    # BFS from the highest-degree node rather than taking the first n_samples node
+    # ids: node id order carries no topological meaning in these datasets, so an
+    # id-sorted slice mostly picks disconnected/near-isolated nodes (verified: it
+    # produced a 3000-node pubmed sample with only 1107 edges vs. ~7000 expected at
+    # the original density, and nx.is_connected was False). A BFS frontier keeps the
+    # sample a single connected subgraph by construction, matching the connectivity
+    # guarantee already enforced on the un-sampled graph in Step 1.
     connected_nodes = sorted(list(G.nodes()))
     if n_samples and n_samples < len(connected_nodes):
-        print(f"Sampling the first {n_samples} nodes from the largest component...")
-        sampled_node_ids = connected_nodes[:n_samples]
-        
+        print(f"Sampling {n_samples} nodes via BFS from the highest-degree node...")
+        seed_node = max(G.degree, key=lambda x: x[1])[0]
+        sampled_node_ids = [seed_node]
+        for _, neighbor in nx.bfs_edges(G, seed_node):
+            sampled_node_ids.append(neighbor)
+            if len(sampled_node_ids) >= n_samples:
+                break
+
         G = G.subgraph(sampled_node_ids).copy()
+        assert nx.is_connected(G), "BFS sample unexpectedly disconnected"
 
     final_node_ids = sorted(list(G.nodes()))
-    
+
     final_features = all_features[final_node_ids]
     final_labels = all_labels[final_node_ids]
-    
+
     final_labels_binary = binarize_labels(final_labels, positive_class_label)
     final_observed_labels = apply_scar_labeling(final_labels_binary, percent_positive)
 
@@ -173,9 +184,27 @@ def _load_planetoid_dataset(
         for i, node_id in enumerate(final_node_ids)
     }
     nx.set_node_attributes(G, node_attributes)
-    
+
     print(f"{name} graph loaded: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
     return G
+
+
+def _load_planetoid_dataset(
+    name: str,
+    positive_class_label: int,
+    percent_positive: float,
+    use_original_edges: bool,
+    k: int,
+    mst: bool,
+    n_samples: int,
+    data_dir: str
+) -> nx.Graph:
+    print(f"Loading {name} dataset...")
+    dataset = Planetoid(root=data_dir, name=name)
+    return _load_pyg_graph_dataset(
+        name, dataset[0], positive_class_label, percent_positive,
+        use_original_edges, k, mst, n_samples
+    )
 
 
 def load_cora_scar(
@@ -212,6 +241,30 @@ def load_pubmed_scar(
     data_dir: str = '/tmp/PubMed'
 ) -> nx.Graph:
     return _load_planetoid_dataset("PubMed", positive_class_label, percent_positive, use_original_edges, k, mst, n_samples, data_dir)
+
+
+def load_amazon_photo_scar(
+    positive_class_label: int,
+    percent_positive: float,
+    use_original_edges: bool = True,
+    k: int = 10,
+    mst: bool = True,
+    n_samples: int = None,
+    data_dir: str = '/tmp/AmazonPhoto'
+) -> nx.Graph:
+    """
+    Amazon Photo co-purchase graph (Shchur et al., 2019): 7650 nodes, 119081
+    undirected edges, 745 features, 8 classes. Matches the dataset/params used
+    in the colleague's dissertation (Guilherme Messias) for the same benchmark:
+    class 6 as positive (highest-frequency class, ~25.4% positive), full graph,
+    no subsampling.
+    """
+    print("Loading Amazon Photo dataset...")
+    dataset = Amazon(root=data_dir, name='Photo')
+    return _load_pyg_graph_dataset(
+        "AmazonPhoto", dataset[0], positive_class_label, percent_positive,
+        use_original_edges, k, mst, n_samples
+    )
 
 
 def load_twitch_scar(
@@ -284,6 +337,7 @@ def load_twitch_scar(
         # Extract features and labels - only use numeric columns
         feature_columns = ['views', 'mature', 'life_time', 'dead_account']
         final_features = final_features_df[feature_columns].values.astype(np.float64)
+        final_features = StandardScaler().fit_transform(final_features)
         true_labels_binary = final_features_df['true_label'].values
         
         # Apply SCAR labeling
