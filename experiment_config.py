@@ -45,6 +45,12 @@ DATASET_CONFIG = {
         'k': 3,
         'percent_positive': 0.1,
         'n_samples': 3000
+    },
+    'amazon_photo': {
+        'positive_class_label': 6,
+        'percent_positive': 0.1,
+        'use_original_edges': True,
+        'mst': False
     }
 }
 
@@ -60,14 +66,14 @@ BASELINE_CONFIG = {
     # replaced with Amazon Photo (7650 nodes) — also used in the same dissertation,
     # full graph, and small enough to run here.
     'datasets': ['cora', 'citeseer', 'mnist', 'twitch', 'amazon_photo'],
-    'percent_positive': [0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25],
+    'percent_positive': [0.01, 0.05, 0.1, 0.15, 0.2, 0.25],
     'num_neg': {
         'cora': 200,
         'citeseer': 200,
         'mnist': 300,
         'twitch': 200,
         'pubmed': 200,
-        'amazon_photo': 200,
+        'amazon_photo': 300,
     },
     'models': {
         'RCSVM': {'alpha': 0.7, 'beta': 0.3},
@@ -75,7 +81,22 @@ BASELINE_CONFIG = {
         'PU_LP': {'alpha': 0.1, 'm': 3, 'l': 1},
         'MCLS': {'k': 7, 'ratio': 0.1},
         'LP_PUL': {},
-    }
+    },
+    # Per-dataset override for MCLS's k (number of KMeans clusters). The ratio-rule
+    # + abs-fallback cluster labeling (models.py::MCLS.train) has no guaranteed
+    # minimum negative-cluster pool size, and that pool's size is highly sensitive
+    # to k in a non-monotonic, dataset-specific way (confirmed by sweeping
+    # k in {5,7,10,12,15,20,25,30} across all percent_positive in [0.01, 0.25]).
+    # These values were picked to maximize the worst-case negative pool across
+    # that percent_positive range, using the default k=7 as fallback for any
+    # dataset not listed here.
+    'MCLS_k_per_dataset': {
+        'cora': 30,
+        'citeseer': 20,
+        'mnist': 30,
+        'twitch': 30,
+        'amazon_photo': 25,
+    },
 }
 
 # ============================================================================
@@ -95,7 +116,7 @@ PARAMETER_RANGES = {
     'avg_node_pot_threshold': [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
 
     # SCAR labeling frequency
-    'percent_positive': [0.01, 0.02, 0.03, 0.04, 0.05, 0.1, 0.15, 0.2, 0.25]
+    'percent_positive': [0.01, 0.05, 0.1, 0.15, 0.2, 0.25]
 }
 
 # ============================================================================

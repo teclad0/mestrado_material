@@ -39,7 +39,7 @@ Examples:
         '--dataset', 
         nargs='+', 
         default=['cora'],
-        choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist'],
+        choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist', 'amazon_photo'],
         help='Dataset(s) to run experiments on (default: cora)'
     )
     

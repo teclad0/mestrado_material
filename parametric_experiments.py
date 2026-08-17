@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 from model import PULearningPC, ReliableNegativeSelection
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
-    load_mnist_scar, relabel_graph_scar
+    load_mnist_scar, load_amazon_photo_scar, relabel_graph_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
 from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2, classify_with_svm
@@ -191,6 +191,8 @@ class PULearningExperimentRunner:
             return load_twitch_scar(**params)
         elif dataset_name == 'mnist':
             return load_mnist_scar(**params)
+        elif dataset_name == 'amazon_photo':
+            return load_amazon_photo_scar(**params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     
