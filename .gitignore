@@ -115,3 +115,14 @@ scheduler.json
 dask-worker*
 #test_*
 docs/
+
+# Local tooling / envs
+.venv/
+.claude/
+.agents/
+skills-lock.json
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.toc
