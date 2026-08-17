@@ -9,6 +9,8 @@ from models import MCLS, LP_PUL
 from sklearn.metrics import f1_score, precision_score, recall_score
 from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
+import networkx as nx
+from networkx.algorithms import node_classification
 import numpy as np
 import os
 import pandas as pd
@@ -238,6 +240,43 @@ def classify_with_svm(graph, reliable_negatives) -> Dict[Any, int]:
             predictions[node] = int(label)
 
     return predictions
+
+
+def classify_with_llgc(graph, reliable_negatives) -> Dict[Any, int]:
+    """
+    Step 2 classifier for graph-based Phase-1 methods (PU_LP, LP_PUL, PULearningPC):
+    Learning with Local and Global Consistency (Zhou et al., 2003).
+
+    Uses networkx's own node_classification.local_and_global_consistency directly
+    over the same graph these methods already operate on in Phase 1 — matches the
+    LP_PUL/PU_LP branch of pu_classification() in ../psrb/runners/runners.py.
+
+    Args:
+        graph: NetworkX graph with node attributes 'observed_label'
+        reliable_negatives: List of node IDs identified as reliable negatives
+
+    Returns:
+        dict: {node_id: predicted_label} for all unlabeled nodes
+    """
+    node_attributes = dict(graph.nodes(data=True))
+    node_list = sorted(list(graph.nodes()))
+
+    rn_set = set(int(x) for x in reliable_negatives)
+    pos_set = {node for node in node_list if node_attributes[node].get('observed_label') == 1}
+    all_unlabeled = {node for node in node_list if node_attributes[node].get('observed_label') == 0}
+
+    if not pos_set or not rn_set:
+        return {}
+
+    G = graph.copy()
+    labels = {node: 1 for node in pos_set}
+    labels.update({node: 0 for node in rn_set})
+    nx.set_node_attributes(G, labels, 'label')
+
+    predicted = node_classification.local_and_global_consistency(G)
+    pred_by_node = dict(zip(G.nodes(), predicted))
+
+    return {node: int(pred_by_node[node]) for node in all_unlabeled}
 
 
 def run_models(dataset_name: str, n_samples: int = None, percent_positive: float = 0.1):
