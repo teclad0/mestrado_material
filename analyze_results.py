@@ -21,49 +21,61 @@ warnings.filterwarnings('ignore')
 class ExperimentResultsAnalyzer:
     """Main class for analyzing experiment results and generating visualizations."""
     
-    def __init__(self, results_dir: str = "experiment_results"):
+    def __init__(self, results_dir: str = "experiment_results", percent_positive: Optional[float] = 0.1):
         """
         Initialize the analyzer with the results directory.
-        
+
         Args:
             results_dir: Path to directory containing experiment results
+            percent_positive: The labeling-rate row to pin the parametric grid to (the
+                grid sweeps percent_positive too, so this keeps the particle/strategy
+                charts about ONE rate instead of averaging across all of them). None
+                disables filtering (only valid for older result files with no
+                percent_positive column at all).
         """
         self.results_dir = Path(results_dir)
+        self.percent_positive = percent_positive
         self.summary_data = {}
         self.final_data = {}
-        self.datasets = ['cora', 'citeseer', 'twitch', 'mnist']
-        
+        self.datasets = ['cora', 'citeseer', 'twitch', 'mnist', 'amazon_photo']
+
         # Set up plotting style
         plt.style.use('default')
-        
+
         # Color palette for datasets
         self.dataset_colors = {
             'cora': '#1f77b4',
-            'citeseer': '#ff7f0e', 
+            'citeseer': '#ff7f0e',
             'twitch': '#2ca02c',
-            'mnist': '#d62728'
+            'mnist': '#d62728',
+            'amazon_photo': '#9467bd'
         }
-        
+
         # Line styles for different datasets
         self.dataset_linestyles = {
             'cora': '-',
             'citeseer': '--',
             'twitch': '-.',
-            'mnist': ':'
+            'mnist': ':',
+            'amazon_photo': (0, (3, 1, 1, 1))
         }
     
     def load_summary_results(self) -> Dict[str, pd.DataFrame]:
         """
         Load all summary results CSV files.
-        
+
         Returns:
             Dictionary mapping dataset names to their summary DataFrames
         """
         print("Loading summary results...")
-        
-        # Define the expected column names for summary results
+
+        # Define the expected column names for summary results. Matches the current
+        # PARAMETER_RANGES grid, which sweeps percent_positive too (so each parameter
+        # combination now has one row PER percent_positive value, not just one overall) —
+        # older result files without that leading column will fail to load; regenerate
+        # them with the current run_experiments.py if that happens.
         column_names = [
-            'num_particles', 'cluster_strategy',
+            'percent_positive', 'num_particles', 'cluster_strategy',
             'positive_cluster_threshold', 'movement_strategy', 'initialization_strategy',
             'avg_node_pot_threshold', 'f1_score_mean', 'f1_score_std', 'f1_score_min',
             'f1_score_max', 'precision_mean', 'precision_std', 'recall_mean', 'recall_std',
@@ -71,9 +83,11 @@ class ExperimentResultsAnalyzer:
             'coverage_std', 'coverage_min', 'coverage_max', 'fallback_rule_used_sum',
             'fallback_rule_used_count', 'avg_threshold_criteria_sum', 'avg_threshold_criteria_count',
             'final_iteration_count_mean', 'final_iteration_count_std', 'final_iteration_count_min',
-            'final_iteration_count_max'
+            'final_iteration_count_max', 'step2_f1_mean', 'step2_f1_std', 'step2_f1_min', 'step2_f1_max',
+            'step2_precision_mean', 'step2_precision_std', 'step2_recall_mean', 'step2_recall_std',
+            'step2_accuracy_mean', 'step2_accuracy_std'
         ]
-        
+
         for dataset in self.datasets:
             file_path = self.results_dir / f"{dataset}_summary_results.csv"
             if file_path.exists():
@@ -81,10 +95,22 @@ class ExperimentResultsAnalyzer:
                     # Read the CSV with proper header handling
                     # Skip first 3 rows: metric names, statistics, and parameter names
                     df = pd.read_csv(file_path, skiprows=3, header=None)
-                    
+
                     # Set the column names
                     df.columns = column_names
-                    
+
+                    # The parametric grid now also varies percent_positive, so without
+                    # pinning it here every downstream group-by (num_particles, strategy, ...)
+                    # would silently average F1 across labeling rates too — e.g. mixing
+                    # 1%-labeled and 25%-labeled results into one number. This chart
+                    # pipeline is about particle/strategy sensitivity (Section 4.2), not
+                    # about labeling-rate sensitivity (that's Section 4.3's tables), so we
+                    # fix one representative rate.
+                    if self.percent_positive is not None:
+                        before = len(df)
+                        df = df[df['percent_positive'] == self.percent_positive].drop(columns=['percent_positive'])
+                        print(f"    Filtered to percent_positive={self.percent_positive}: {before} -> {len(df)} rows")
+
                     self.summary_data[dataset] = df
                     print(f"  ✓ Loaded {dataset}: {len(df)} parameter combinations")
                     print(f"    Columns: {list(df.columns)[:5]}...")  # Show first 5 columns
@@ -92,7 +118,7 @@ class ExperimentResultsAnalyzer:
                     print(f"  ✗ Error loading {dataset}: {e}")
             else:
                 print(f"  ✗ File not found: {file_path}")
-        
+
         return self.summary_data
     
     def load_final_results(self) -> Dict[str, pd.DataFrame]:
@@ -420,10 +446,10 @@ class ExperimentResultsAnalyzer:
         """
         Create a single heatmap chart for a specific parameter combination.
         """
-        # Create subplots for each dataset
-        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        # Create subplots for each dataset (2x3 grid fits up to 6 datasets)
+        fig, axes = plt.subplots(2, 3, figsize=figsize)
         axes = axes.flatten()
-        
+
         chart_title = f"F1 Score Heatmap\n"
         chart_title += f"Init: {init_strategy}, Move: {movement_strategy}"
         if filter_by_threshold:
@@ -431,24 +457,27 @@ class ExperimentResultsAnalyzer:
         else:
             chart_title += ", Aggregated across all thresholds"
         
-        for idx, dataset in enumerate(self.datasets):
-            if dataset not in filtered_data:
-                continue
-                
+        # Compact layout: only datasets that actually have data claim a panel slot,
+        # in order, instead of each dataset keeping its position in self.datasets — a
+        # single-dataset run (e.g. just amazon_photo) would otherwise land in whatever
+        # slot that dataset happens to occupy, leaving mostly-empty panels before it.
+        datasets_present = [d for d in self.datasets if d in filtered_data]
+
+        for idx, dataset in enumerate(datasets_present):
             ax = axes[idx]
             df = filtered_data[dataset]
-            
+
             # Filter for this specific parameter combination
             mask = (
-                (df['initialization_strategy'] == init_strategy) & 
+                (df['initialization_strategy'] == init_strategy) &
                 (df['movement_strategy'] == movement_strategy)
             )
             subset = df[mask].copy()
-            
+
             if len(subset) == 0:
                 ax.set_title(f'{dataset.upper()} - No Data')
                 continue
-            
+
             # Create pivot table for heatmap
             pivot_data = subset.pivot_table(
                 values='f1_score_mean',
@@ -456,25 +485,25 @@ class ExperimentResultsAnalyzer:
                 columns='num_particles',
                 aggfunc='mean'
             )
-            
+
             # Create heatmap (reverse Y-axis to go from 0.2 to 0.9)
             im = ax.imshow(pivot_data.values, cmap='viridis', aspect='auto', origin='lower')
-            
+
             # Set ticks and labels
             ax.set_xticks(range(len(pivot_data.columns)))
             ax.set_xticklabels(pivot_data.columns)
             ax.set_yticks(range(len(pivot_data.index)))
             ax.set_yticklabels([f'{x:.1f}' for x in pivot_data.index])
-            
+
             # Add colorbar
             plt.colorbar(im, ax=ax, label='F1 Score')
-            
+
             ax.set_title(f'{dataset.upper()} Dataset')
             ax.set_xlabel('Number of Particles')
             ax.set_ylabel('Avg Node Potential Threshold')
-        
+
         # Hide empty subplots
-        for idx in range(len(self.datasets), len(axes)):
+        for idx in range(len(datasets_present), len(axes)):
             axes[idx].set_visible(False)
         
         plt.suptitle(chart_title, fontsize=14, fontweight='bold')
@@ -527,10 +556,10 @@ class ExperimentResultsAnalyzer:
         print("Aggregating data across avg_node_pot_threshold values...")
         aggregated_data = self.aggregate_data_by_particles(filtered_data, include_threshold_agg=not filter_by_threshold)
         
-        # Create subplots for each dataset
-        fig, axes = plt.subplots(2, 2, figsize=figsize)
+        # Create subplots for each dataset (2x3 grid fits up to 6 datasets)
+        fig, axes = plt.subplots(2, 3, figsize=figsize)
         axes = axes.flatten()
-        
+
         # First pass: collect all F1 scores to determine global Y-axis range
         all_f1_scores = []
         for dataset in self.datasets:
@@ -545,13 +574,13 @@ class ExperimentResultsAnalyzer:
         else:
             y_min, y_max = 0, 1
         
-        for idx, dataset in enumerate(self.datasets):
-            if dataset not in aggregated_data:
-                continue
-                
+        # Compact layout: see the matching comment in _create_single_heatmap.
+        datasets_present = [d for d in self.datasets if d in aggregated_data]
+
+        for idx, dataset in enumerate(datasets_present):
             ax = axes[idx]
             df = aggregated_data[dataset]
-            
+
             # Get unique parameter combinations
             combinations = df[['initialization_strategy', 'movement_strategy']].drop_duplicates()
             
@@ -587,11 +616,11 @@ class ExperimentResultsAnalyzer:
             ax.set_ylim(y_min, y_max)  # Use global Y-axis range
         
         # Hide empty subplots
-        for idx in range(len(self.datasets), len(axes)):
+        for idx in range(len(datasets_present), len(axes)):
             axes[idx].set_visible(False)
-        
+
         if filter_by_threshold:
-            plt.suptitle(f'F1 Score vs Number of Particles (Threshold={threshold})', 
+            plt.suptitle(f'F1 Score vs Number of Particles (Threshold={threshold})',
                         fontsize=16, fontweight='bold')
         else:
             plt.suptitle('F1 Score vs Number of Particles (Aggregated across all thresholds)', 
@@ -612,7 +641,7 @@ class ExperimentResultsAnalyzer:
     def generate_publication_grid_chart(self,
                                         save_dir: str = "analysis_charts",
                                         filename: str = "publication_f1_vs_particles_grid",
-                                        figsize: Tuple[int, int] = (12, 14)) -> None:
+                                        figsize: Tuple[int, int] = (18, 9)) -> None:
         """
         Generate a publication-ready 3×2 grid: one subplot per dataset (5 datasets),
         strategies as lines, shared legend in the 6th cell.
@@ -758,7 +787,7 @@ class ExperimentResultsAnalyzer:
     def generate_publication_pot_threshold_grid(self,
                                                 save_dir: str = "analysis_charts",
                                                 filename: str = "publication_f1_vs_pot_threshold_grid",
-                                                figsize: Tuple[int, int] = (12, 14)) -> None:
+                                                figsize: Tuple[int, int] = (18, 9)) -> None:
         """
         Publication-ready 3×2 grid: one subplot per dataset, lines = number of particles,
         x-axis = avg_node_pot_threshold, aggregated across all strategies.
@@ -830,7 +859,7 @@ class ExperimentResultsAnalyzer:
         markers    = ['o', 's', '^', 'D', 'v', 'P']
 
         particle_style = {
-            int(p): (colors[i], linestyles[i], markers[i], f'{int(p)} particles')
+            int(p): (colors[i], linestyles[i % len(linestyles)], markers[i % len(markers)], f'{int(p)} particles')
             for i, p in enumerate(particle_counts)
         }
 
@@ -1103,15 +1132,24 @@ def main():
         help='Aggregate across all thresholds instead of filtering'
     )
     parser.add_argument(
-        '--save-dir', 
+        '--save-dir',
         default='analysis_charts',
         help='Directory to save analysis outputs (default: analysis_charts)'
     )
-    
+    parser.add_argument(
+        '--percent-positive',
+        type=float,
+        default=0.1,
+        help='Labeling-rate row to pin the parametric grid to, since it sweeps '
+             'percent_positive too (default: 0.1). Pass a negative value to disable '
+             'filtering (only valid for older result files with no percent_positive column).'
+    )
+
     args = parser.parse_args()
-    
+    pct_pos = None if args.percent_positive is not None and args.percent_positive < 0 else args.percent_positive
+
     # Create analyzer and run analysis
-    analyzer = ExperimentResultsAnalyzer(results_dir=args.results_dir)
+    analyzer = ExperimentResultsAnalyzer(results_dir=args.results_dir, percent_positive=pct_pos)
     analyzer.run_full_analysis(threshold=args.threshold, filter_by_threshold=args.filter_by_threshold, save_dir=args.save_dir)
 
 

@@ -17,7 +17,7 @@ warnings.filterwarnings('ignore')
 from model import PULearningPC, ReliableNegativeSelection
 from generate_dataset import (
     load_cora_scar, load_citeseer_scar, load_pubmed_scar, load_twitch_scar,
-    load_mnist_scar, relabel_graph_scar
+    load_mnist_scar, load_amazon_photo_scar, relabel_graph_scar
 )
 from dataset_loader import DatasetLoader, load_dataset_for_model
 from models_experiment import evaluate_reliable_negative_metrics, evaluate_phase2, classify_with_svm
@@ -191,6 +191,8 @@ class PULearningExperimentRunner:
             return load_twitch_scar(**params)
         elif dataset_name == 'mnist':
             return load_mnist_scar(**params)
+        elif dataset_name == 'amazon_photo':
+            return load_amazon_photo_scar(**params)
         else:
             raise ValueError(f"Unknown dataset: {dataset_name}")
     
@@ -200,7 +202,8 @@ class PULearningExperimentRunner:
                        dataset_kwargs: Dict[str, Any] = None,
                        dataset_filename: str = None,
                        n_jobs: int = None,
-                       num_neg: int = 200) -> pd.DataFrame:
+                       num_neg: int = 200,
+                       num_neg_mode: str = 'positives') -> pd.DataFrame:
         """
         Run all experiments for a given dataset.
 
@@ -213,7 +216,15 @@ class PULearningExperimentRunner:
             dataset_kwargs: Additional parameters for dataset loading
             dataset_filename: Optional filename for pre-generated dataset
             n_jobs: Number of parallel jobs (None = use all available cores)
-            num_neg: Number of reliable negatives to select (default: 200)
+            num_neg: Number of reliable negatives to select when num_neg_mode='fixed'
+                (default: 200) — ignored under 'positives' mode.
+            num_neg_mode: 'positives' (default) sets num_neg to the observed positive
+                count for each (dataset, percent_positive) combo instead of a fixed
+                constant — a fixed count otherwise swamps P with RN at low
+                percent_positive (e.g. citeseer at 1% has only ~5 labeled positives).
+                Matches --num-neg-mode in run_baselines.py, which the final
+                comparison tables (Section 4.3) already use. 'fixed' keeps the old
+                per-dataset constant, for comparison against pre-dynamic-RN results.
 
         Returns:
             DataFrame with all experiment results
@@ -261,15 +272,42 @@ class PULearningExperimentRunner:
             base_graph = self.load_dataset(dataset_name, dataset_filename, **kwargs)
             print(f"Base graph: {base_graph.number_of_nodes()} nodes, {base_graph.number_of_edges()} edges")
 
+            # Resume support: every completed simulation (across all percent_positive
+            # blocks, not just the last one) is durably appended to a checkpoint CSV as
+            # it finishes. On restart, already-completed (sim params, run_id) combos are
+            # skipped instead of recomputed — this is what makes Ctrl-C / crash recovery
+            # actually recover progress instead of losing everything since the last
+            # completed block.
+            # Checkpoint filename is namespaced by num_neg_mode: 'fixed' and 'positives'
+            # runs are NOT comparable (different num_neg per row), so switching modes
+            # must start a fresh checkpoint rather than silently resuming from
+            # incompatible cached results.
+            checkpoint_path = self._checkpoint_path(dataset_name, num_neg_mode)
+            checkpoint_df = self._load_checkpoint(checkpoint_path)
+
             all_results = []
             for pct_pos in percent_positive_values:
                 print(f"\n--- Re-labeling with percent_positive={pct_pos} ---")
                 graph = relabel_graph_scar(base_graph, pct_pos)
 
-                results = self._run_experiments_optimized(
-                    graph, sim_combinations, rns_combinations, n_jobs, num_neg, dataset_name, pct_pos
+                if num_neg_mode == 'positives':
+                    pct_num_neg = sum(1 for _, attrs in graph.nodes(data=True) if attrs.get('observed_label') == 1)
+                    print(f"  num_neg (dynamic, observed positives) = {pct_num_neg}")
+                else:
+                    pct_num_neg = num_neg
+                    print(f"  num_neg (fixed) = {pct_num_neg}")
+
+                prior_rows, skip_keys = self._checkpointed_for_pct(checkpoint_df, pct_pos)
+                if skip_keys:
+                    print(f"  Resuming: {len(skip_keys)} simulation(s) already checkpointed for "
+                          f"percent_positive={pct_pos}, skipping them")
+
+                new_results = self._run_experiments_optimized(
+                    graph, sim_combinations, rns_combinations, n_jobs, pct_num_neg, dataset_name, pct_pos,
+                    skip_keys=skip_keys, checkpoint_path=checkpoint_path
                 )
-                all_results.extend(results)
+                all_results.extend(prior_rows)
+                all_results.extend(new_results)
 
             df = pd.DataFrame(all_results)
         else:
@@ -298,6 +336,64 @@ class PULearningExperimentRunner:
                 f"init={params['initialization_strategy']}, "
                 f"avg_thresh={params['avg_node_pot_threshold']}")
 
+    def _checkpoint_path(self, dataset_name: str, num_neg_mode: str) -> str:
+        """Path to the durable, append-only checkpoint CSV for a dataset's parametric run.
+
+        Namespaced by num_neg_mode — 'fixed' and 'positives' results aren't comparable
+        (different num_neg per row), so each mode gets its own checkpoint file.
+        """
+        return os.path.join(self.output_dir, f"{dataset_name}_{num_neg_mode}_progress_checkpoint.csv")
+
+    @staticmethod
+    def _load_checkpoint(checkpoint_path: str) -> Optional[pd.DataFrame]:
+        """Load a previous run's checkpoint CSV, if any."""
+        if os.path.exists(checkpoint_path):
+            try:
+                df = pd.read_csv(checkpoint_path)
+                print(f"  Loaded checkpoint: {len(df)} previously-completed evaluation rows from {checkpoint_path}")
+                return df
+            except Exception as e:
+                print(f"  Could not load checkpoint {checkpoint_path}: {e} — starting fresh")
+        return None
+
+    @staticmethod
+    def _sim_key(row_or_params: Dict[str, Any], run_id: Optional[int] = None) -> Tuple:
+        """
+        Identity of one simulation (the expensive part) — independent of which RNS
+        config (cluster_strategy/positive_cluster_threshold) was evaluated on top of it.
+        """
+        rid = row_or_params.get('run_id') if run_id is None else run_id
+        return (
+            row_or_params.get('num_particles'),
+            row_or_params.get('movement_strategy'),
+            row_or_params.get('initialization_strategy'),
+            row_or_params.get('avg_node_pot_threshold'),
+            rid,
+        )
+
+    def _checkpointed_for_pct(self, checkpoint_df: Optional[pd.DataFrame], pct_pos: float) -> Tuple[List[Dict[str, Any]], set]:
+        """
+        Split a loaded checkpoint into (rows already done for this percent_positive,
+        set of simulation keys already covered — to skip when rebuilding the task list).
+        """
+        if checkpoint_df is None or len(checkpoint_df) == 0:
+            return [], set()
+        subset = checkpoint_df[checkpoint_df['percent_positive'] == pct_pos]
+        if len(subset) == 0:
+            return [], set()
+        prior_rows = subset.to_dict('records')
+        skip_keys = {self._sim_key(row) for row in prior_rows}
+        return prior_rows, skip_keys
+
+    @staticmethod
+    def _append_checkpoint(checkpoint_path: str, rows: List[Dict[str, Any]]) -> None:
+        """Durably append newly-completed evaluation rows to the checkpoint CSV."""
+        if not rows:
+            return
+        pd.DataFrame(rows).to_csv(
+            checkpoint_path, mode='a', header=not os.path.exists(checkpoint_path), index=False
+        )
+
     def _run_experiments_optimized(self,
                                   graph: nx.Graph,
                                   sim_combinations: List[Dict[str, Any]],
@@ -305,16 +401,33 @@ class PULearningExperimentRunner:
                                   n_jobs: int,
                                   num_neg: int,
                                   dataset_name: str,
-                                  percent_positive: Optional[float]) -> List[Dict[str, Any]]:
+                                  percent_positive: Optional[float],
+                                  skip_keys: Optional[set] = None,
+                                  checkpoint_path: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Optimized experiment execution: run each simulation config once,
         then evaluate multiple RNS configs on the cached result.
+
+        skip_keys: simulation keys (see _sim_key) already present in the checkpoint —
+        these are not resubmitted. checkpoint_path: if given, newly-completed results
+        are durably appended there every 20 simulations and once more at the end, so a
+        crash loses at most the last <20 in-flight simulations instead of the whole run.
         """
-        # Build tasks: one per (sim_config, run_id)
+        skip_keys = skip_keys or set()
+
+        # Build tasks: one per (sim_config, run_id), excluding already-checkpointed ones
         all_tasks = []
+        skipped = 0
         for i, sim_params in enumerate(sim_combinations):
             for run_id in range(self.n_runs):
+                key = self._sim_key(sim_params, run_id)
+                if key in skip_keys:
+                    skipped += 1
+                    continue
                 all_tasks.append((sim_params, run_id, i))
+
+        if skipped:
+            print(f"  Skipping {skipped} already-checkpointed simulation(s)")
 
         total_simulations = len(all_tasks)
         total_evaluations = total_simulations * len(rns_combinations)
@@ -326,6 +439,7 @@ class PULearningExperimentRunner:
         )
 
         results = []
+        unflushed = []  # rows not yet durably written to checkpoint_path
         completed = 0
         successful = 0
         failed = 0
@@ -349,6 +463,7 @@ class PULearningExperimentRunner:
                     try:
                         batch_results = future.result()
                         results.extend(batch_results)
+                        unflushed.extend(batch_results)
                         completed += 1
                         pbar.update(1)
 
@@ -414,6 +529,9 @@ class PULearningExperimentRunner:
 
                         if completed % 20 == 0:
                             self.save_intermediate_results(results, f"{dataset_name}_intermediate")
+                            if checkpoint_path:
+                                self._append_checkpoint(checkpoint_path, unflushed)
+                                unflushed = []
 
                     except Exception as e:
                         tqdm.write(f"  ERROR for task {task_idx} after {elapsed:.1f}s: {e}")
@@ -445,10 +563,14 @@ class PULearningExperimentRunner:
                                 'status': f'error: {str(e)}'
                             }
                             results.append(error_result)
+                            unflushed.append(error_result)
                         completed += 1
                         failed += 1
                         task_times.append(elapsed)
                         pbar.update(1)
+
+        if checkpoint_path:
+            self._append_checkpoint(checkpoint_path, unflushed)
 
         return results
     

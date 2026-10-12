@@ -45,6 +45,12 @@ DATASET_CONFIG = {
         'k': 3,
         'percent_positive': 0.1,
         'n_samples': 3000
+    },
+    'amazon_photo': {
+        'positive_class_label': 6,
+        'percent_positive': 0.1,
+        'use_original_edges': True,
+        'mst': False
     }
 }
 
@@ -83,11 +89,13 @@ BASELINE_CONFIG = {
 # ============================================================================
 PARAMETER_RANGES = {
     # Particle Competition Model parameters
-    'num_particles': [2, 5, 10, 20, 50, 100],
+    # Matches Tabela 4 (quali doc, Sec 4.2 "Análise Paramétrica"), plus 100
+    # (used in the Section 4.3 tuned configs — see Tabela 5's num_p=100).
+    'num_particles': [2, 5, 10, 15, 20, 50, 100],
 
     # Reliable Negative Selection parameters
     'cluster_strategy': ['majority', 'percentage'],
-    'positive_cluster_threshold': [0],
+    'positive_cluster_threshold': [0.01, 0.1, 0.2, 0.3],
 
     # Movement and initialization parameters
     'movement_strategy': ['uniform', 'degree_weighted'],

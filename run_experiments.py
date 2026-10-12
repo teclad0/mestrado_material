@@ -39,7 +39,7 @@ Examples:
         '--dataset', 
         nargs='+', 
         default=['cora'],
-        choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist'],
+        choices=['cora', 'citeseer', 'pubmed', 'twitch', 'mnist', 'amazon_photo'],
         help='Dataset(s) to run experiments on (default: cora)'
     )
     
@@ -126,7 +126,16 @@ Examples:
         '--num-neg',
         type=int,
         default=200,
-        help='Number of reliable negatives to select (default: 200)'
+        help='Number of reliable negatives to select when --num-neg-mode=fixed (default: 200)'
+    )
+    parser.add_argument(
+        '--num-neg-mode',
+        choices=['fixed', 'positives'],
+        default='positives',
+        help="'positives' (default) sets num_neg to the observed positive count for "
+             "each (dataset, percent_positive) combo instead of a fixed constant, "
+             "matching --num-neg-mode in run_baselines.py and the Section 4.3 tables. "
+             "'fixed' keeps the old per-dataset constant."
     )
     
     # Dataset-specific parameters
@@ -277,7 +286,8 @@ Examples:
                 dataset_name,
                 dataset_specific_kwargs,
                 n_jobs=args.n_jobs,
-                num_neg=num_neg
+                num_neg=num_neg,
+                num_neg_mode=args.num_neg_mode
             )
             all_results[dataset_name] = results_df
             
