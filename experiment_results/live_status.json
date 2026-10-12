@@ -1,173 +1,176 @@
 {
-  "dataset": "pubmed",
+  "dataset": "amazon_photo",
   "percent_positive": 0.25,
-  "total_tasks": 576,
-  "completed": 576,
-  "successful": 295,
-  "failed": 281,
+  "total_tasks": 2240,
+  "completed": 2240,
+  "successful": 1600,
+  "failed": 640,
   "in_flight": 0,
-  "elapsed_seconds": 3708.4,
-  "avg_task_time": 1054.3,
+  "elapsed_seconds": 28390.6,
+  "avg_task_time": 9411.7,
   "eta_seconds": 0.0,
-  "last_updated": "2026-05-26 04:31:04",
+  "last_updated": "2026-09-21 09:03:24",
   "completed_by_particles": {
-    "2": 576,
-    "5": 576,
-    "10": 576,
-    "20": 576,
-    "50": 576,
-    "100": 576
+    "2": 1600,
+    "5": 1600,
+    "10": 1600,
+    "15": 1600,
+    "20": 1600,
+    "50": 1600,
+    "100": 1600
   },
   "best_f1_by_particles": {
     "2": 0.0,
-    "5": 0.0,
-    "10": 0.961038961038961,
-    "20": 0.9637305699481865,
-    "50": 0.9690721649484536,
-    "100": 0.9690721649484536
+    "5": 0.9989462592202318,
+    "10": 1.0,
+    "15": 1.0,
+    "20": 1.0,
+    "50": 1.0,
+    "100": 1.0
   },
   "best_accuracy_by_particles": {
     "2": 0.0,
-    "5": 0.0,
-    "10": 0.5186979049335436,
-    "20": 0.5136612021857924,
-    "50": 0.5308732394366197,
-    "100": 0.5311285142824947
+    "5": 0.8989740666856655,
+    "10": 0.9117186387583653,
+    "15": 0.8997440273037542,
+    "20": 0.8940623665100385,
+    "50": 0.8827802307363624,
+    "100": 0.8847303258858688
   },
   "recent_tasks": [
     {
-      "task_idx": 558,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.4",
-      "time": 3619.2,
-      "f1": 0.913,
-      "coverage": 0.1056,
-      "iters": 201,
-      "status": "success"
-    },
-    {
-      "task_idx": 556,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.3",
-      "time": 3632.0,
-      "f1": 0.8732,
-      "coverage": 0.0999,
-      "iters": 160,
-      "status": "success"
-    },
-    {
-      "task_idx": 568,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.7",
-      "time": 3635.9,
-      "f1": 0.9101,
-      "coverage": 0.0969,
-      "iters": 156,
-      "status": "success"
-    },
-    {
-      "task_idx": 562,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.5",
-      "time": 3643.4,
-      "f1": 0.916,
-      "coverage": 0.1068,
-      "iters": 179,
-      "status": "success"
-    },
-    {
-      "task_idx": 563,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.5",
-      "time": 3650.4,
-      "f1": 0.9333,
-      "coverage": 0.1119,
-      "iters": 200,
-      "status": "success"
-    },
-    {
-      "task_idx": 565,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.6",
-      "time": 3661.8,
-      "f1": 0.9071,
-      "coverage": 0.1031,
-      "iters": 181,
-      "status": "success"
-    },
-    {
-      "task_idx": 564,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.6",
-      "time": 3673.4,
-      "f1": 0.9218,
-      "coverage": 0.1027,
-      "iters": 166,
-      "status": "success"
-    },
-    {
-      "task_idx": 567,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.7",
-      "time": 3673.9,
-      "f1": 0.9071,
-      "coverage": 0.1042,
-      "iters": 158,
-      "status": "success"
-    },
-    {
-      "task_idx": 570,
+      "task_idx": 2225,
       "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.8",
-      "time": 3683.7,
-      "f1": 0.8981,
-      "coverage": 0.1093,
-      "iters": 188,
+      "time": 28039.9,
+      "f1": 1.0,
+      "coverage": 0.5002,
+      "iters": 696,
       "status": "success"
     },
     {
-      "task_idx": 569,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.7",
-      "time": 3688.2,
-      "f1": 0.9101,
-      "coverage": 0.1022,
-      "iters": 180,
-      "status": "success"
-    },
-    {
-      "task_idx": 574,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
-      "time": 3693.3,
-      "f1": 0.9418,
-      "coverage": 0.101,
-      "iters": 167,
-      "status": "success"
-    },
-    {
-      "task_idx": 573,
-      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
-      "time": 3698.9,
-      "f1": 0.9041,
-      "coverage": 0.0888,
-      "iters": 129,
-      "status": "success"
-    },
-    {
-      "task_idx": 571,
+      "task_idx": 2227,
       "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.8",
-      "time": 3699.4,
-      "f1": 0.8981,
-      "coverage": 0.1036,
-      "iters": 188,
+      "time": 28080.2,
+      "f1": 1.0,
+      "coverage": 0.4711,
+      "iters": 600,
       "status": "success"
     },
     {
-      "task_idx": 572,
+      "task_idx": 2226,
       "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.8",
-      "time": 3702.5,
-      "f1": 0.939,
-      "coverage": 0.1003,
-      "iters": 175,
+      "time": 28128.7,
+      "f1": 1.0,
+      "coverage": 0.482,
+      "iters": 612,
       "status": "success"
     },
     {
-      "task_idx": 575,
+      "task_idx": 2229,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.8",
+      "time": 28139.8,
+      "f1": 1.0,
+      "coverage": 0.474,
+      "iters": 595,
+      "status": "success"
+    },
+    {
+      "task_idx": 2230,
       "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
-      "time": 3708.1,
-      "f1": 0.916,
-      "coverage": 0.1178,
-      "iters": 227,
+      "time": 28154.1,
+      "f1": 1.0,
+      "coverage": 0.4536,
+      "iters": 594,
+      "status": "success"
+    },
+    {
+      "task_idx": 2228,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.8",
+      "time": 28175.1,
+      "f1": 0.9989,
+      "coverage": 0.4334,
+      "iters": 518,
+      "status": "success"
+    },
+    {
+      "task_idx": 2231,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28200.0,
+      "f1": 0.9989,
+      "coverage": 0.4965,
+      "iters": 821,
+      "status": "success"
+    },
+    {
+      "task_idx": 2233,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28256.4,
+      "f1": 1.0,
+      "coverage": 0.5069,
+      "iters": 596,
+      "status": "success"
+    },
+    {
+      "task_idx": 2234,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28266.1,
+      "f1": 1.0,
+      "coverage": 0.435,
+      "iters": 508,
+      "status": "success"
+    },
+    {
+      "task_idx": 2232,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28298.5,
+      "f1": 1.0,
+      "coverage": 0.4641,
+      "iters": 632,
+      "status": "success"
+    },
+    {
+      "task_idx": 2236,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28318.5,
+      "f1": 1.0,
+      "coverage": 0.4628,
+      "iters": 624,
+      "status": "success"
+    },
+    {
+      "task_idx": 2235,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28330.6,
+      "f1": 1.0,
+      "coverage": 0.451,
+      "iters": 539,
+      "status": "success"
+    },
+    {
+      "task_idx": 2237,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28363.5,
+      "f1": 1.0,
+      "coverage": 0.4858,
+      "iters": 655,
+      "status": "success"
+    },
+    {
+      "task_idx": 2238,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28369.3,
+      "f1": 1.0,
+      "coverage": 0.4346,
+      "iters": 513,
+      "status": "success"
+    },
+    {
+      "task_idx": 2239,
+      "params": "p=100, mov=degree_weighted, init=degree_weighted, avg_thresh=0.9",
+      "time": 28389.9,
+      "f1": 1.0,
+      "coverage": 0.4723,
+      "iters": 605,
       "status": "success"
     }
   ]
