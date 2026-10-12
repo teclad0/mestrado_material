@@ -1,9 +1,8 @@
 datasets/*
-*.jpg
-*.tex
 CLAUDE.md
 raw/*
 raw_txt/*
+scratchpad_logs/
 docs/
 wiki/*
 # Byte-compiled / optimized / DLL files
@@ -12,8 +11,6 @@ __pycache__/
 
 # C extensions
 *.so
-*.pdf
-*.png
 
 # Distribution / packaging
 *_env/
@@ -38,13 +35,10 @@ var/
 .installed.cfg
 
 *.egg
-*.csv
 *.bin
 *.bin.gz
 models/d2v.*
 tmp/*
-*.xlsx
-*.csv
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
